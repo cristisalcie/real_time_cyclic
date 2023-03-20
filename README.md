@@ -74,6 +74,6 @@ The configurator does not have any specific requirements. It can be a console ap
 doesn't matter.
 
 ## Questions
-How would the paradigm change if we had to have masters and slaves on different machines?
-Could we achieve better performance with other inter-process communication mechanisms?
-What are we actually simulating through the signal usage?
+- How would the paradigm change if we had to have masters and slaves on different machines?
+- Could we achieve better performance with other inter-process communication mechanisms?
+- What are we actually simulating through the signal usage?
