@@ -2,6 +2,7 @@
 #define MASTER_H
 
 #include <syslog.h>
+#include "common.h"
 
 #define log_info(str, args...) \
     do { \
@@ -24,5 +25,11 @@
         syslog(LOG_WARNING, "[WARNING] " str " (%s, %s, %d)", ##args, __FILE__, __func__, __LINE__); \
     } while(0)
 
+typedef struct master_context_s {
+    shm_t *shmp;
+
+    // Signal sleeping processor slave threads using semaphore
+    sem_t sig_semaphore[MAX_SLAVES];
+} master_context_t;
 
 #endif /* MASTER_H */

@@ -4,12 +4,12 @@
 #include <sys/shm.h>
 #include <pthread.h>
 #include <string.h>
+#include <semaphore.h>
 
 #include "master.h"
-#include "common.h"
 
 
-static shm_t *shmp = NULL;
+static master_context_t self = { .shmp = NULL };
 
 
 
@@ -18,7 +18,7 @@ static int assignShmsegIdx(pid_t pid) {
     int shmsegIdx = pid % MAX_SLAVES;
 
     for (int i = 0; i < MAX_SLAVES; ++i) {
-        if (shmp->slave_shmseg[shmsegIdx].pid == NO_PID) {
+        if (self.shmp->slave_shmseg[shmsegIdx].pid == NO_PID) {
             log_debug("Assigned shared mem idx %d for process %d", shmsegIdx, pid);
             return shmsegIdx;
         }
@@ -35,7 +35,7 @@ static int getAssignedShmsegIdx(pid_t pid) {
     int shmsegIdx = pid % MAX_SLAVES;
 
     for (int i = 0; i < MAX_SLAVES; ++i) {
-        if (shmp->slave_shmseg[shmsegIdx].pid == pid) {
+        if (self.shmp->slave_shmseg[shmsegIdx].pid == pid) {
             log_debug("Got shared mem idx %d for process %d", shmsegIdx, pid);
             return shmsegIdx;
         }
@@ -45,6 +45,49 @@ static int getAssignedShmsegIdx(pid_t pid) {
 
     return shmsegIdx;
     return NO_PID;
+}
+
+static void *slave_processor_detached_thread(void *data) {
+    int shmsegIdx = *(int*)data;
+
+    while (true) {
+        log_debug("Slave processor detached thread with tid %ld preparing to wait for semaphore[%d]", pthread_self(), shmsegIdx);
+        if (sem_wait(&(self.sig_semaphore[shmsegIdx]))) {
+            // TODO: handle failure
+            log_error("sem_wait() call failed!");
+            return NULL;
+        }
+        // TODO: handle possible outcomes
+    }
+
+    return NULL;
+}
+
+static int create_slave_processor_detached_thread(int shmsegIdx) {
+    pthread_t tid;
+    pthread_attr_t attr;
+    int ret;
+
+    ret = pthread_attr_init(&attr);
+    if (ret) {
+        log_error("pthread_attr_init() call failed!");
+        return RTC_ERROR;
+    }
+
+    ret = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    if (ret) {
+        log_error("pthread_attr_setdetachstate() call failed!");
+        return RTC_ERROR;
+    }
+
+    ret = pthread_create(&tid, &attr, slave_processor_detached_thread, (void*)&shmsegIdx);
+    if (ret) {
+        log_error("pthread_create() call failed!");
+        return RTC_ERROR;
+    }
+
+    log_debug("Successfully created slave processor detached thread with tid %ld", tid);
+    return RTC_SUCCESS;
 }
 
 static void *signal_handler_thread(void *ignore) {
@@ -74,9 +117,16 @@ static void *signal_handler_thread(void *ignore) {
                         continue;
                     }
 
-
+                    if (create_slave_processor_detached_thread(shmsegIdx) != RTC_SUCCESS) {
+                        log_error("Failed to create slave processor detached thread, continuing...");
+                        continue;
+                    }
                 } else {
-
+                    if (sem_post(&(self.sig_semaphore[shmsegIdx]))) {
+                        // TODO: handle failure
+                        log_error("sem_post() call failed, continuing...");
+                        continue;
+                    }
                 }
             }
         }
@@ -85,6 +135,34 @@ static void *signal_handler_thread(void *ignore) {
 }
 
 
+
+static int destroy_signal_semaphores() {
+    for (int i = 0; i < MAX_SLAVES; ++i) {
+        if (sem_destroy(&(self.sig_semaphore[i]))) {
+            log_error("sem_destroy() call failed!");
+            return RTC_ERROR;
+        }
+    }
+
+    return RTC_SUCCESS;
+}
+
+static int final() {
+    int ret;
+
+    if ((ret = destroy_signal_semaphores()) != RTC_SUCCESS) return ret;
+
+    // Deattach from shared memory
+    if (shmdt(self.shmp)) {
+        log_error("shmdt() call failed!");
+        return RTC_ERROR;
+    }
+    self.shmp = NULL;
+
+    log_info("Stopped master!");
+    closelog();
+    return RTC_SUCCESS;
+}
 
 static int block_signals() {
     sigset_t block_mask;
@@ -97,33 +175,50 @@ static int block_signals() {
     return 0;
 }
 
+static int init_signal_semaphores() {
+    for (int i = 0; i < MAX_SLAVES; ++i) {
+        if (sem_init(&(self.sig_semaphore[i]), 0, 0)) {
+            log_error("sem_init() call failed!");
+            return RTC_ERROR;
+        }
+    }
+
+    return RTC_SUCCESS;
+}
+
 static int init_shared_memory() {
     int shmid;
 
     // Get or create if not existing shared memory
-    shmid = shmget(SHARED_MEMORY_KEY, sizeof(shm_t), 0777 | IPC_CREAT);
+    log_info("Shared memory key = %d", SHARED_MEMORY_KEY);
+
+    shmid = shmget(SHARED_MEMORY_KEY, sizeof(shm_t), 0666 | IPC_CREAT);
     if (shmid == -1) {
         log_error("shmget() call failed to create shared memory!");
         return RTC_ERROR;
     }
-
     // Attach to shared memory
-    shmp = shmat(shmid, NULL, 0);
-    if (shmp == (void*) -1) {
+    self.shmp = shmat(shmid, NULL, 0);
+    if (self.shmp == (void*) -1) {
         log_error("shmmat() call failed to attach to shared memory!");
         return RTC_ERROR;
     }
 
+#ifdef 0 // if 1, no other process will be able to get shmid of SHARED_MEMORY_KEY
     if (shmctl(shmid, IPC_RMID, 0)) {
         // Once all processes deattached, shared memory will be freed
         log_error("shmctl() call failed!");
         return RTC_ERROR;
     }
+#endif
 
-    memset(shmp, 0, sizeof(shm_t));
+    memset(self.shmp, 0, sizeof(shm_t));
+
+    self.shmp->master_pid = getpid();
+    log_debug("Set self.shmp->master_pid to %d", self.shmp->master_pid);
 
     for (int i = 0; i < MAX_SLAVES; ++i) {
-        shmp->slave_shmseg[i].pid = NO_PID;
+        self.shmp->slave_shmseg[i].pid = NO_PID;
     }
 
     return RTC_SUCCESS;
@@ -135,32 +230,17 @@ static int init() {
     openlog("master", LOG_PID | LOG_PERROR, LOG_USER);
     setlogmask(LOG_UPTO(LOG_DEBUG));  // includes all logs 0,1,2 up to 7(DEBUG)
     // setlogmask(LOG_MASK(LOG_INFO));
-
     log_info("Started master!");
 
     if (block_signals()) return RTC_ERROR;
     if ((ret = init_shared_memory()) != RTC_SUCCESS) return ret;
+    if ((ret = init_signal_semaphores()) != RTC_SUCCESS) return ret;
 
-    shmp->master_pid = getpid();
-    log_debug("Set shmp->master_pid to %d", shmp->master_pid);
-
-    return RTC_SUCCESS;
-}
-
-static int final() {
-    // Deattach from shared memory
-    if (shmdt(shmp)) {
-        log_error("shmdt() call failed!");
-        return RTC_ERROR;
-    }
-
-    log_info("Stopped master!");
-    closelog();
     return RTC_SUCCESS;
 }
 
 int main(int argc, char *argv[]) {
-    init();
+    init(); // TODO: Failed initialization => end program
 
     int ret;
     pthread_t tid;
@@ -190,7 +270,7 @@ int main(int argc, char *argv[]) {
     // slave thread got lock -> process request -> finally mutex already locked return to while condition trying to take lock again
     // problem - what if slave thread because of error sends another x2 sigusr1 and corresponding slave thread of master did not finish first execution hence unlocks mutex and then it finishes first execution and unlocks mutex again...
 
-                            // signal thread -> create slave semaphore with 0 (resources) + send ack back to slave
+    // signal thread -> create slave semaphore with 0 (resources) + send ack back to slave
     // slave thread tries to take a resource from semaphore inside while(1) but cant cuz its 0
     // signal thread receives sigusr1 from slave and adds 1 resource to semaphore of the corresponding slave thread
     // slave thread can now take 1 resource and execute -> finished exec back to condition and there is no resource.
