@@ -204,7 +204,7 @@ static int init_shared_memory() {
         return RTC_ERROR;
     }
 
-#ifdef 0 // if 1, no other process will be able to get shmid of SHARED_MEMORY_KEY
+#if 0 // if 1, no other process will be able to get shmid of SHARED_MEMORY_KEY
     if (shmctl(shmid, IPC_RMID, 0)) {
         // Once all processes deattached, shared memory will be freed
         log_error("shmctl() call failed!");
