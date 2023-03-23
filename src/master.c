@@ -9,6 +9,7 @@
 #include "master.h"
 
 
+
 static master_context_t self = { .shmp = NULL };
 
 
@@ -27,7 +28,7 @@ static int assignShmsegIdx(pid_t pid) {
     }
 
     log_error("Can't assign shared memory index, out of memory for process %d", pid);
-    return NO_PID;
+    return NO_IDX;
 }
 
 // Returns assigned index if successful. NO_PID if failed.
@@ -43,12 +44,13 @@ static int getAssignedShmsegIdx(pid_t pid) {
         shmsegIdx %= MAX_SLAVES;
     }
 
-    return shmsegIdx;
-    return NO_PID;
+    return NO_IDX;
 }
 
 static void *slave_processor_detached_thread(void *data) {
     int shmsegIdx = *(int*)data;
+
+    // TODO: Check if slave of name that this thread is in charge of already exists and handle it
 
     while (true) {
         log_debug("Slave processor detached thread with tid %ld preparing to wait for semaphore[%d]", pthread_self(), shmsegIdx);
@@ -90,12 +92,56 @@ static int create_slave_processor_detached_thread(int shmsegIdx) {
     return RTC_SUCCESS;
 }
 
+static int send_connect_slave_signal() {
+    pid_t slave_pid = self.control_shmp->connect_disconnect_slave_pid;
+    
+    int shmsegIdx = getAssignedShmsegIdx(slave_pid);
+    if (shmsegIdx == NO_IDX) {
+        log_debug("Process %d has no assigned index (expected), assigning...", slave_pid);
+        shmsegIdx = assignShmsegIdx(slave_pid);
+        if (shmsegIdx == NO_IDX) {
+            log_error("Failed to create shared memory index for process %d!", slave_pid);
+            return RTC_ERROR;
+        }
+        // Set at shared memory index, pid of process owner
+        self.shmp->slave_shmseg[shmsegIdx].pid = slave_pid;
+    } else {
+        log_error("Slave process %d already connected!", slave_pid);
+        return RTC_ERROR;
+    }
+    
+    self.shmp->slave_shmseg[shmsegIdx].req_m_to_s_cmd = M_RQ_S_CONNECT_SLAVE;
+
+    if (kill(slave_pid, SIGUSR1)) {
+        log_error("Failed to send connect slave signal to process %d!", slave_pid);
+        return RTC_ERROR;
+    }
+    return RTC_SUCCESS;
+}
+
+static int handle_stop_master_signal() {
+    // TODO
+    return RTC_SUCCESS;
+}
+static int handle_delete_slave_signal() {
+    // TODO
+    return RTC_SUCCESS;
+}
+static int handle_connect_slave_signal() {
+    return send_connect_slave_signal();
+}
+static int handle_disconnect_slave_signal() {
+    // TODO
+    return RTC_SUCCESS;
+}
+
 static void *signal_handler_thread(void *ignore) {
     int err;
     sigset_t sig_set;
     siginfo_t sig_info;
     sigemptyset(&sig_set);
     sigaddset(&sig_set, SIGUSR1);
+    sigaddset(&sig_set, SIGUSR2);
 
     while (true) {
         log_debug("Waiting for signal!");
@@ -103,30 +149,77 @@ static void *signal_handler_thread(void *ignore) {
         if (err == -1) {
             log_error("sigwaitinfo() call failed!");
         } else {
-            if (sig_info.si_signo == SIGUSR1) {
-                log_debug("Processing signal SIGUSR1 from process %d", sig_info.si_pid);
+            log_debug("Processing signal %d from process %d", sig_info.si_signo, sig_info.si_pid);
 
+            if (sig_info.si_signo == SIGUSR1) {  // SIGUSR1 communication dedicated to master-slave
                 int shmsegIdx = getAssignedShmsegIdx(sig_info.si_pid);
-                if (shmsegIdx == NO_PID) {
-                    // Process has not been assigned a shared memory segment yet.
-                    log_debug("Process %d has no assigned index, assigning...", sig_info.si_pid);
-                    shmsegIdx = assignShmsegIdx(sig_info.si_pid);
 
-                    if (shmsegIdx == NO_PID) {
-                        log_error("Failed to handle signal from process %d, continuing...", sig_info.si_pid);
-                        continue;
-                    }
-
-                    if (create_slave_processor_detached_thread(shmsegIdx) != RTC_SUCCESS) {
-                        log_error("Failed to create slave processor detached thread, continuing...");
-                        continue;
-                    }
+                if (shmsegIdx == NO_IDX) {
+                    log_error("Received signal SIGUSR1 from unrecognized process %d, continuing...", sig_info.si_pid);
+                    continue;
                 } else {
-                    if (sem_post(&(self.sig_semaphore[shmsegIdx]))) {
-                        // TODO: handle failure
-                        log_error("sem_post() call failed, continuing...");
-                        continue;
+                    if (self.shmp->slave_shmseg[shmsegIdx].is_connected) {
+                        // Allow tread allocated for pid to process
+                        if (sem_post(&(self.sig_semaphore[shmsegIdx]))) {
+                            log_error("sem_post() call failed, continuing...");
+                            continue;
+                        }
+                    } else {
+                        // Surely received response on CONNECT_SLAVE request
+                        // Else case must exist because we need to create a
+                        // thread to handle processing for this pid in the future
+                        switch (self.shmp->slave_shmseg[shmsegIdx].res_s_to_m_cmd) {
+                        case S_RS_M_NACK:
+                            self.control_shmp->res_c_cmd = C_RS_NACK;
+                            if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
+                                log_error("Failed to send NACK signal to configurator!");
+                            }
+                            break;
+                        case S_RS_M_ACK:
+                            if (create_slave_processor_detached_thread(shmsegIdx) != RTC_SUCCESS) {
+                                log_error("Failed to create slave processor detached thread, continuing...");
+                                continue;
+                            }
+                            self.shmp->slave_shmseg[shmsegIdx].is_connected = true;
+
+                            self.control_shmp->res_c_cmd = C_RS_ACK;
+                            if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
+                                log_error("Failed to send ACK signal to configurator!");
+                            }
+
+                            break;
+                        default:
+                            log_error("Unrecognized command from process %d, continuing...", sig_info.si_pid);
+                            self.control_shmp->res_c_cmd = C_RS_NACK;
+                            if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
+                                log_error("Failed to send NACK signal to configurator!");
+                            }
+                            continue;
+                        }
                     }
+                }
+            } else if (sig_info.si_signo == SIGUSR2) {
+                switch (self.control_shmp->req_c_cmd) {
+                case C_RQ_STOP_MASTER:
+                    handle_stop_master_signal();
+                    break;
+                case C_RQ_DELETE_SLAVE:
+                    handle_delete_slave_signal();
+                    break;
+                case C_RQ_CONNECT_SLAVE:
+                    if (handle_connect_slave_signal() != RTC_SUCCESS) {
+                        self.control_shmp->res_c_cmd = C_RS_NACK;
+                        if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
+                            log_error("Failed to send NACK signal to configurator!");
+                        }
+                    }
+                    break;
+                case C_RQ_DISCONNECT_SLAVE:
+                    handle_disconnect_slave_signal();
+                    break;
+                default:
+                    log_error("Received unknown command from configurator process %d", self.control_shmp->configurator_pid);
+                    break;
                 }
             }
         }
@@ -168,11 +261,12 @@ static int block_signals() {
     sigset_t block_mask;
     sigemptyset(&block_mask);
     sigaddset(&block_mask, SIGUSR1);
+    sigaddset(&block_mask, SIGUSR2);
     if (sigprocmask(SIG_BLOCK, &block_mask, NULL) == -1) {
         log_error("Can't block signals!");
-        return 1;
+        return RTC_ERROR;
     }
-    return 0;
+    return RTC_SUCCESS;
 }
 
 static int init_signal_semaphores() {
@@ -181,6 +275,25 @@ static int init_signal_semaphores() {
             log_error("sem_init() call failed!");
             return RTC_ERROR;
         }
+    }
+
+    return RTC_SUCCESS;
+}
+
+static int init_control_shared_memory() {
+    int shmid;
+
+    // Get existing shared memory
+    shmid = shmget(CONTROL_SHARED_MEMORY_KEY, sizeof(control_shm_t), 0666);
+    if (shmid == -1) {
+        log_error("shmget() call failed to create shared memory!\n");
+        return RTC_ERROR;
+    }
+    // Attach to shared memory
+    self.control_shmp = shmat(shmid, NULL, 0);
+    if (self.control_shmp == (void*) -1) {
+        log_error("shmmat() call failed to attach to shared memory!\n");
+        return RTC_ERROR;
     }
 
     return RTC_SUCCESS;
@@ -204,14 +317,6 @@ static int init_shared_memory() {
         return RTC_ERROR;
     }
 
-#if 0 // if 1, no other process will be able to get shmid of SHARED_MEMORY_KEY
-    if (shmctl(shmid, IPC_RMID, 0)) {
-        // Once all processes deattached, shared memory will be freed
-        log_error("shmctl() call failed!");
-        return RTC_ERROR;
-    }
-#endif
-
     memset(self.shmp, 0, sizeof(shm_t));
 
     self.shmp->master_pid = getpid();
@@ -219,6 +324,8 @@ static int init_shared_memory() {
 
     for (int i = 0; i < MAX_SLAVES; ++i) {
         self.shmp->slave_shmseg[i].pid = NO_PID;
+        // TODO: Configurable fields
+        self.shmp->slave_shmseg[i].communication_cycle_ms = DEFAULT_COMMUNICATION_CYCLE_MS;
     }
 
     return RTC_SUCCESS;
@@ -232,8 +339,9 @@ static int init() {
     // setlogmask(LOG_MASK(LOG_INFO));
     log_info("Started master!");
 
-    if (block_signals()) return RTC_ERROR;
+    if ((ret = block_signals()) != RTC_SUCCESS) return ret;
     if ((ret = init_shared_memory()) != RTC_SUCCESS) return ret;
+    if ((ret = init_control_shared_memory()) != RTC_SUCCESS) return ret;
     if ((ret = init_signal_semaphores()) != RTC_SUCCESS) return ret;
 
     return RTC_SUCCESS;
