@@ -20,6 +20,7 @@ typedef enum {
     DELETE_SLAVE,
     CONNECT_SLAVE,
     DISCONNECT_SLAVE,
+    CHANGE_SLAVE_NAME,
     REQUEST_SIZE
 } request_t;
 

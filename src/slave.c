@@ -12,7 +12,6 @@
 
 static slave_context_t self = { .shmp = NULL };
 
-static char slave_name[SLAVE_NAME_SIZE];
 
 
 static int block_signals() {
@@ -46,7 +45,7 @@ static void handle_connect_slave_request() {
     shmseg_t *shmseg = &self.shmp->slave_shmseg[self.shmsegIdx];
 
     // Fill shared memory structure
-    strcpy(shmseg->name, slave_name);
+    strcpy(shmseg->name, self.name);
 
     // TODO: Start communication cycle
 
@@ -59,7 +58,46 @@ static void handle_connect_slave_request() {
 }
 
 static int handle_disconnect_slave_request() {
+    // TODO
     return RTC_SUCCESS;
+}
+
+static void handle_change_name_slave_request() {
+    unsigned int prev_change_name_idx = self.change_name_idx;
+
+    if (self.change_name_idx) {
+        // Erase previously added number from string name
+        for (int i = SLAVE_NAME_SIZE - 1; i > 0; --i) {
+            if (self.name[i] == '_') {
+                self.name[i] = '\0';
+                self.shmp->slave_shmseg[self.shmsegIdx].name[i] = '\0';
+                break;
+            }
+            self.name[i] = '\0';
+            self.shmp->slave_shmseg[self.shmsegIdx].name[i] = '\0';
+        }
+    }
+    ++prev_change_name_idx;
+    if (prev_change_name_idx < self.change_name_idx) {
+        // Index overflow send NACK
+        // TODO: Set error message for master to log
+        self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = NACK;
+        if (kill(self.shmp->master_pid, SIGUSR1)) {
+            fprintf(stderr, "Failed to send response back to master!\n");
+        }
+        return;
+    }
+    ++self.change_name_idx;
+
+    sprintf(self.name, "%s_%u", self.shmp->slave_shmseg[self.shmsegIdx].name, self.change_name_idx);
+    strcpy(self.shmp->slave_shmseg[self.shmsegIdx].name, self.name);
+
+    printf("Changed slave name to %s\n", self.name);
+
+    self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = ACK;
+    if (kill(self.shmp->master_pid, SIGUSR1)) {
+        fprintf(stderr, "Failed to send response back to master!\n");
+    }
 }
 
 static void *signal_handler_thread(void *ignore) {
@@ -70,7 +108,7 @@ static void *signal_handler_thread(void *ignore) {
     sigaddset(&sig_set, SIGUSR1);
 
     while (true) {
-        printf("[SLAVE %s %d] Waiting for signal!\n", slave_name, getpid());
+        printf("[SLAVE %s %d] Waiting for signal!\n", self.name, getpid());
         err = sigwaitinfo(&sig_set, &sig_info);
         if (err == -1) {
             fprintf(stderr, "sigwaitinfo() call failed!\n");
@@ -81,7 +119,7 @@ static void *signal_handler_thread(void *ignore) {
             }
             
             if (sig_info.si_signo == SIGUSR1) {
-                printf("[SLAVE %s %d] Processing signal SIGUSR1 from process %d\n", slave_name, getpid(), sig_info.si_pid);
+                printf("[SLAVE %s %d] Processing signal SIGUSR1 from process %d\n", self.name, getpid(), sig_info.si_pid);
 
                 if (self.shmsegIdx == NO_IDX) {
                     // First time getting shared memory index.
@@ -102,6 +140,9 @@ static void *signal_handler_thread(void *ignore) {
                 case DISCONNECT_SLAVE:
                     handle_disconnect_slave_request();
                     // TODO: Send response back to master
+                    break;
+                case CHANGE_SLAVE_NAME:
+                    handle_change_name_slave_request();
                     break;
                 default:
                     fprintf(stderr, "Unrecognized command received from master process %d\n", sig_info.si_pid);
@@ -170,8 +211,10 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Syntax: %s <slave_name>\n", argv[0]);
         return 1;
     }
-    strcpy(slave_name, argv[1]);
-    printf("[SLAVE] Process id = %d with name %s\n", getpid(), slave_name);
+    memset(&self, 0, sizeof(slave_context_t));
+
+    strcpy(self.name, argv[1]);
+    printf("[SLAVE] Process id = %d with name %s\n", getpid(), self.name);
 
     int ret;
     pthread_t tid;

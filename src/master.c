@@ -47,10 +47,34 @@ static int getAssignedShmsegIdx(pid_t pid) {
     return NO_IDX;
 }
 
+static int send_change_name_slave_request(int shmsegIdx) {
+    pid_t slave_pid = self.shmp->slave_shmseg[shmsegIdx].pid;
+
+    self.shmp->slave_shmseg[shmsegIdx].req_m_to_s = CHANGE_SLAVE_NAME;
+    if (kill(slave_pid, SIGUSR1)) {
+        log_error("Failed to send change name slave request to process %d!", slave_pid);
+        return RTC_ERROR;
+    }
+    return RTC_SUCCESS;
+}
+
+static bool must_change_name(int shmsegIdx) {
+    for (int i = 0; i < MAX_SLAVES; ++i) {
+        if (i == shmsegIdx) continue;
+
+        if (!strcmp(self.shmp->slave_shmseg[shmsegIdx].name, self.shmp->slave_shmseg[i].name)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void *slave_processor_detached_thread(void *data) {
     int shmsegIdx = *(int*)data;
 
-    // TODO: Check if slave of name that this thread is in charge of already exists and handle it
+    if (must_change_name(shmsegIdx)) {
+        send_change_name_slave_request(shmsegIdx);
+    }
 
     while (true) {
         log_debug("Slave processor detached thread with tid %ld preparing to wait for semaphore[%d]", pthread_self(), shmsegIdx);
@@ -59,7 +83,31 @@ static void *slave_processor_detached_thread(void *data) {
             log_error("sem_wait() call failed!");
             return NULL;
         }
+
         // TODO: handle possible outcomes
+        switch (self.shmp->slave_shmseg[shmsegIdx].req_m_to_s)
+        {
+        case CHANGE_SLAVE_NAME:
+            switch (self.shmp->slave_shmseg[shmsegIdx].res_s_to_m)
+            {
+            case NACK:
+                // TODO: Disconnect slave!
+                break;
+            case ACK:
+                if (must_change_name(shmsegIdx)) {
+                    send_change_name_slave_request(shmsegIdx);
+                }
+                break;
+            default:
+                log_error("Unrecognized response for name change request received!");
+                break;
+            }
+            break;
+        default:
+            log_error("Received response for unrecognized request!");
+            break;
+        }
+
     }
 
     return NULL;
@@ -92,7 +140,7 @@ static int create_slave_processor_detached_thread(int shmsegIdx) {
     return RTC_SUCCESS;
 }
 
-static int send_connect_slave_signal() {
+static int send_connect_slave_request() {
     pid_t slave_pid = self.control_shmp->connect_disconnect_slave_pid;
     
     int shmsegIdx = getAssignedShmsegIdx(slave_pid);
@@ -113,24 +161,24 @@ static int send_connect_slave_signal() {
     self.shmp->slave_shmseg[shmsegIdx].req_m_to_s = CONNECT_SLAVE;
 
     if (kill(slave_pid, SIGUSR1)) {
-        log_error("Failed to send connect slave signal to process %d!", slave_pid);
+        log_error("Failed to send connect slave request to process %d!", slave_pid);
         return RTC_ERROR;
     }
     return RTC_SUCCESS;
 }
 
-static int handle_stop_master_signal() {
+static int handle_configurator_stop_master_request() {
     // TODO
     return RTC_SUCCESS;
 }
-static int handle_delete_slave_signal() {
+static int handle_configurator_delete_slave_request() {
     // TODO
     return RTC_SUCCESS;
 }
-static int handle_connect_slave_signal() {
-    return send_connect_slave_signal();
+static int handle_configurator_connect_slave_request() {
+    return send_connect_slave_request();
 }
-static int handle_disconnect_slave_signal() {
+static int handle_configurator_disconnect_slave_request() {
     // TODO
     return RTC_SUCCESS;
 }
@@ -201,13 +249,13 @@ static void *signal_handler_thread(void *ignore) {
             } else if (sig_info.si_signo == SIGUSR2) {
                 switch (self.control_shmp->request) {
                 case STOP_MASTER:
-                    handle_stop_master_signal();
+                    handle_configurator_stop_master_request();
                     break;
                 case DELETE_SLAVE:
-                    handle_delete_slave_signal();
+                    handle_configurator_delete_slave_request();
                     break;
                 case CONNECT_SLAVE:
-                    if (handle_connect_slave_signal() != RTC_SUCCESS) {
+                    if (handle_configurator_connect_slave_request() != RTC_SUCCESS) {
                         self.control_shmp->response = NACK;
                         if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
                             log_error("Failed to send NACK signal to configurator!");
@@ -215,7 +263,7 @@ static void *signal_handler_thread(void *ignore) {
                     }
                     break;
                 case DISCONNECT_SLAVE:
-                    handle_disconnect_slave_signal();
+                    handle_configurator_disconnect_slave_request();
                     break;
                 default:
                     log_error("Received unknown command from configurator process %d", self.control_shmp->configurator_pid);

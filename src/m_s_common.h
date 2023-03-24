@@ -6,7 +6,7 @@
 
 typedef struct shmseg_s {
     // Fields modifiable only by slaves
-    char name[SLAVE_NAME_SIZE];
+    char name[SLAVE_NAME_SIZE];  // Name string can't contain spaces
     char string_value[STRING_SIZE];
     int int_value;
     bool bool_value;
