@@ -51,7 +51,7 @@ static void handle_connect_slave_request() {
     // TODO: Start communication cycle
 
     // Send ACK response back to master
-    shmseg->res_s_to_m_cmd = S_RS_M_ACK;
+    shmseg->res_s_to_m = ACK;
     if (kill(self.shmp->master_pid, SIGUSR1)) {
         fprintf(stderr, "Failed to send response back to master!\n");
         return;
@@ -94,12 +94,12 @@ static void *signal_handler_thread(void *ignore) {
                     }
                 }
 
-                switch (self.shmp->slave_shmseg[self.shmsegIdx].req_m_to_s_cmd)
+                switch (self.shmp->slave_shmseg[self.shmsegIdx].req_m_to_s)
                 {
-                case M_RQ_S_CONNECT_SLAVE:
+                case CONNECT_SLAVE:
                     handle_connect_slave_request();
                     break;
-                case M_RQ_S_DISCONNECT_SLAVE:
+                case DISCONNECT_SLAVE:
                     handle_disconnect_slave_request();
                     // TODO: Send response back to master
                     break;

@@ -110,7 +110,7 @@ static int send_connect_slave_signal() {
         return RTC_ERROR;
     }
     
-    self.shmp->slave_shmseg[shmsegIdx].req_m_to_s_cmd = M_RQ_S_CONNECT_SLAVE;
+    self.shmp->slave_shmseg[shmsegIdx].req_m_to_s = CONNECT_SLAVE;
 
     if (kill(slave_pid, SIGUSR1)) {
         log_error("Failed to send connect slave signal to process %d!", slave_pid);
@@ -168,21 +168,21 @@ static void *signal_handler_thread(void *ignore) {
                         // Surely received response on CONNECT_SLAVE request
                         // Else case must exist because we need to create a
                         // thread to handle processing for this pid in the future
-                        switch (self.shmp->slave_shmseg[shmsegIdx].res_s_to_m_cmd) {
-                        case S_RS_M_NACK:
-                            self.control_shmp->res_c_cmd = C_RS_NACK;
+                        switch (self.shmp->slave_shmseg[shmsegIdx].res_s_to_m) {
+                        case NACK:
+                            self.control_shmp->response = NACK;
                             if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
                                 log_error("Failed to send NACK signal to configurator!");
                             }
                             break;
-                        case S_RS_M_ACK:
+                        case ACK:
                             if (create_slave_processor_detached_thread(shmsegIdx) != RTC_SUCCESS) {
                                 log_error("Failed to create slave processor detached thread, continuing...");
                                 continue;
                             }
                             self.shmp->slave_shmseg[shmsegIdx].is_connected = true;
 
-                            self.control_shmp->res_c_cmd = C_RS_ACK;
+                            self.control_shmp->response = ACK;
                             if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
                                 log_error("Failed to send ACK signal to configurator!");
                             }
@@ -190,7 +190,7 @@ static void *signal_handler_thread(void *ignore) {
                             break;
                         default:
                             log_error("Unrecognized command from process %d, continuing...", sig_info.si_pid);
-                            self.control_shmp->res_c_cmd = C_RS_NACK;
+                            self.control_shmp->response = NACK;
                             if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
                                 log_error("Failed to send NACK signal to configurator!");
                             }
@@ -199,22 +199,22 @@ static void *signal_handler_thread(void *ignore) {
                     }
                 }
             } else if (sig_info.si_signo == SIGUSR2) {
-                switch (self.control_shmp->req_c_cmd) {
-                case C_RQ_STOP_MASTER:
+                switch (self.control_shmp->request) {
+                case STOP_MASTER:
                     handle_stop_master_signal();
                     break;
-                case C_RQ_DELETE_SLAVE:
+                case DELETE_SLAVE:
                     handle_delete_slave_signal();
                     break;
-                case C_RQ_CONNECT_SLAVE:
+                case CONNECT_SLAVE:
                     if (handle_connect_slave_signal() != RTC_SUCCESS) {
-                        self.control_shmp->res_c_cmd = C_RS_NACK;
+                        self.control_shmp->response = NACK;
                         if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
                             log_error("Failed to send NACK signal to configurator!");
                         }
                     }
                     break;
-                case C_RQ_DISCONNECT_SLAVE:
+                case DISCONNECT_SLAVE:
                     handle_disconnect_slave_signal();
                     break;
                 default:

@@ -48,24 +48,24 @@ static int init_control_shared_memory() {
 }
 
 static void print_main_menu() {
-    for (int i = 0; i < C_RQ_CMD_SIZE; ++i) {
+    for (int i = 0; i < REQUEST_SIZE; ++i) {
         switch (i) {
-        case C_RQ_START_MASTER:
+        case START_MASTER:
             printf("%d: Start master\n", i);
             break;
-        case C_RQ_STOP_MASTER:
+        case STOP_MASTER:
             printf("%d: Stop master\n", i);
             break;
-        case C_RQ_CREATE_SLAVE:
+        case CREATE_SLAVE:
             printf("%d: Create slave\n", i);
             break;
-        case C_RQ_DELETE_SLAVE:
+        case DELETE_SLAVE:
             printf("%d: Delete slave\n", i);
             break;
-        case C_RQ_CONNECT_SLAVE:
+        case CONNECT_SLAVE:
             printf("%d: Connect slave\n", i);
             break;
-        case C_RQ_DISCONNECT_SLAVE:
+        case DISCONNECT_SLAVE:
             printf("%d: Disconnect slave\n", i);
             break;
         }
@@ -73,11 +73,11 @@ static void print_main_menu() {
 
 }
 
-static void read_req_cmd() {
-    int cmd_num;
+static void read_req_code() {
+    int req_code;
     printf("\nInsert command number: ");
-    scanf("%d", &cmd_num);
-    self.shmp->req_c_cmd = cmd_num;
+    scanf("%d", &req_code);
+    self.shmp->request = req_code;
     printf("\n");
 }
 
@@ -95,19 +95,18 @@ static void wait_connect_slave_response() {
     siginfo_t sig_info;
 
     sigemptyset(&sig_set);
-    sigaddset(&sig_set, SIGUSR1);
     sigaddset(&sig_set, SIGUSR2);
 
     err = sigwaitinfo(&sig_set, &sig_info);
     if (err == -1) {
         fprintf(stderr, "sigwaitinfo() call failed!");
     } else {
-        switch (self.shmp->res_c_cmd)
+        switch (self.shmp->response)
         {
-        case C_RS_NACK:
+        case NACK:
             printf("Connect slave request failed!\n");
             break;
-        case C_RS_ACK:
+        case ACK:
             printf("Connect slave request succeded!\n");
             break;
         default:
@@ -125,9 +124,9 @@ int main(int argc, char *argv[]) {
 
     while(true) {
         print_main_menu();
-        read_req_cmd();
-        switch(self.shmp->req_c_cmd) {
-        case C_RQ_START_MASTER:
+        read_req_code();
+        switch(self.shmp->request) {
+        case START_MASTER:
         {
             int fork_pid = fork();
             if (fork_pid == 0) {
@@ -147,10 +146,10 @@ int main(int argc, char *argv[]) {
             }
             break;
         }
-        case C_RQ_STOP_MASTER:
+        case STOP_MASTER:
             printf("TODO: Stop master\n");
             break;
-        case C_RQ_CREATE_SLAVE:
+        case CREATE_SLAVE:
         {
             char slave_name[SLAVE_NAME_SIZE];
             memset(slave_name, 0, SLAVE_NAME_SIZE * sizeof(char));
@@ -180,10 +179,10 @@ int main(int argc, char *argv[]) {
             }
             break;
         }
-        case C_RQ_DELETE_SLAVE:
+        case DELETE_SLAVE:
             printf("TODO: Delete slave\n");
             break;
-        case C_RQ_CONNECT_SLAVE:
+        case CONNECT_SLAVE:
         {
             pid_t slave_pid;
 
@@ -204,7 +203,7 @@ int main(int argc, char *argv[]) {
             wait_connect_slave_response();
             break;
         }
-        case C_RQ_DISCONNECT_SLAVE:
+        case DISCONNECT_SLAVE:
             printf("TODO: Disconnect slave\n");
             break;
         default:

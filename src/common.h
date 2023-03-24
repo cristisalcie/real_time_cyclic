@@ -13,4 +13,20 @@
 #define NO_PID -1
 #define NO_IDX -1
 
+typedef enum {
+    START_MASTER,
+    STOP_MASTER,
+    CREATE_SLAVE,
+    DELETE_SLAVE,
+    CONNECT_SLAVE,
+    DISCONNECT_SLAVE,
+    REQUEST_SIZE
+} request_t;
+
+typedef enum {
+    NACK,
+    ACK,
+    RESPONSE_SIZE
+} response_t;
+
 #endif /* COMMON_H */
