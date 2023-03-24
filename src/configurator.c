@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <signal.h>
 #include <sys/shm.h>
 #include <string.h>
@@ -48,6 +49,7 @@ static int init_control_shared_memory() {
 }
 
 static void print_main_menu() {
+    printf("\n");
     for (int i = 0; i < REQUEST_SIZE; ++i) {
         switch (i) {
         case START_MASTER:
@@ -75,9 +77,20 @@ static void print_main_menu() {
 
 static void read_req_code() {
     int req_code;
+    size_t line_length = MAX_LINE_LENGTH;
     printf("\nInsert command number: ");
-    scanf("%d", &req_code);
+
+    char *line = (char*)calloc(MAX_LINE_LENGTH, sizeof(char));
+
+    getline(&line, &line_length, stdin);
+
+    if (sscanf(line, "%d", &req_code) != 1) {
+        fprintf(stderr, "Invalid command number. Please insert a number!\n");
+        req_code = -1;
+    }
     self.shmp->request = req_code;
+
+    free(line);
     printf("\n");
 }
 
@@ -155,7 +168,27 @@ int main(int argc, char *argv[]) {
             memset(slave_name, 0, SLAVE_NAME_SIZE * sizeof(char));
 
             printf("Set slave name: ");
-            scanf("%127s", slave_name);  // Assuming SLAVE_NAME_SIZE = 128
+            {
+                size_t read_characters;
+                size_t line_length = MAX_LINE_LENGTH;
+                char *line = (char*)calloc(MAX_LINE_LENGTH, sizeof(char));
+
+                read_characters = getline(&line, &line_length, stdin);
+
+                if (read_characters < 2) {
+                    printf("Minimum name length is 1 character!\n");
+                    free(line);
+                    break;
+                }
+                if (line[0] == ' ') {
+                    printf("Name can't start with space character!");
+                    free(line);
+                    break;
+                }
+
+                sscanf(line, "%127s", slave_name);
+                free(line);
+            }
             printf("\n");
             
             int fork_pid = fork();
@@ -207,7 +240,7 @@ int main(int argc, char *argv[]) {
             printf("TODO: Disconnect slave\n");
             break;
         default:
-            printf("Unrecognized request command, continuing...");
+            printf("Unrecognized request command, continuing...\n");
             break;
         }
     }

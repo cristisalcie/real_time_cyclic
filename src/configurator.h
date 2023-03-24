@@ -7,6 +7,7 @@
 #define MASTER_BIN_PATH "/home/ubuntu/Projects/real_time_cyclic/out/master"
 #define SLAVE_BIN_PATH "/home/ubuntu/Projects/real_time_cyclic/out/slave"
 #define MAX_CREATE_SLAVES 64  // TODO
+#define MAX_LINE_LENGTH 16
 
 typedef struct slave_data_s {
     char name[SLAVE_NAME_SIZE];
