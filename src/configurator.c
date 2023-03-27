@@ -50,7 +50,7 @@ static int init_control_shared_memory() {
 
 static void print_main_menu() {
     printf("\n");
-    for (int i = 0; i < REQUEST_SIZE; ++i) {
+    for (int i = 0; i <= DISCONNECT_SLAVE; ++i) {
         switch (i) {
         case START_MASTER:
             printf("%d: Start master\n", i);
@@ -223,8 +223,8 @@ int main(int argc, char *argv[]) {
             scanf("%d", &slave_pid);
             printf("\n");
 
-            // TOOD: save slave_pids in self structure to be able to disconnect/delete slave
-            // TODO: Send correct pid only
+            // TODO 5: save slave_pids in self structure to be able to disconnect/delete slave
+            // TODO 5: Send correct pid only
 
             self.shmp->connect_disconnect_slave_pid = slave_pid;
             
@@ -234,6 +234,9 @@ int main(int argc, char *argv[]) {
             }
 
             wait_connect_slave_response();
+
+            // TODO 2: Receive what parameters can be requested from slave in order to choose one
+            // TODO 2: Be asked at how many miliseconds we will receive parameters.
             break;
         }
         case DISCONNECT_SLAVE:

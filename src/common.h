@@ -21,6 +21,8 @@ typedef enum {
     CONNECT_SLAVE,
     DISCONNECT_SLAVE,
     CHANGE_SLAVE_NAME,
+    START_SLAVE_CYCLE, // TODO 1
+    STOP_SLAVE_CYCLE,  // TODO 1
     REQUEST_SIZE
 } request_t;
 

@@ -41,15 +41,56 @@ static int getAssignedShmsegIdx(pid_t pid) {
     return NO_IDX;
 }
 
+static void *slave_communication_cycle_detached_thread(void *ignore) {
+    while (true) {
+        if (sem_wait(&self.allow_communication_cycle)) {
+            fprintf(stderr, "sem_wait() call failed!\n");
+            return NULL;
+        }
+
+        // TODO 1: sem_post at the end to continue looping
+    }
+
+    return NULL;
+}
+
+static int create_communication_cycle_detached_thread() {
+    pthread_t tid;
+    pthread_attr_t attr;
+    int ret;
+
+    ret = pthread_attr_init(&attr);
+    if (ret) {
+        fprintf(stderr, "pthread_attr_init() call failed!\n");
+        return RTC_ERROR;
+    }
+
+    ret = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    if (ret) {
+        fprintf(stderr, "pthread_attr_setdetachstate() call failed!\n");
+        return RTC_ERROR;
+    }
+
+    ret = pthread_create(&tid, &attr, slave_communication_cycle_detached_thread, NULL);
+    if (ret) {
+        fprintf(stderr, "pthread_create() call failed!\n");
+        return RTC_ERROR;
+    }
+
+    return RTC_SUCCESS;
+}
+
 static void handle_connect_slave_request() {
     shmseg_t *shmseg = &self.shmp->slave_shmseg[self.shmsegIdx];
 
     // Fill shared memory structure
     strcpy(shmseg->name, self.name);
 
-    // TODO: Start communication cycle
+    // TODO 1: Send available parameters
+    // TODO 1: Wait for master/configurator choice
+    // TODO 1: Start communication cycle
 
-    // Send ACK response back to master
+    // Send ACK response back to master with available parameters
     shmseg->res_s_to_m = ACK;
     if (kill(self.shmp->master_pid, SIGUSR1)) {
         fprintf(stderr, "Failed to send response back to master!\n");
@@ -100,6 +141,14 @@ static void handle_change_name_slave_request() {
     }
 }
 
+static void handle_start_cycle_slave_request() {
+    // TODO 1
+}
+
+static void handle_stop_cycle_slave_request() {
+    // TODO 1
+}
+
 static void *signal_handler_thread(void *ignore) {
     int err;
     sigset_t sig_set;
@@ -139,10 +188,16 @@ static void *signal_handler_thread(void *ignore) {
                     break;
                 case DISCONNECT_SLAVE:
                     handle_disconnect_slave_request();
-                    // TODO: Send response back to master
                     break;
                 case CHANGE_SLAVE_NAME:
                     handle_change_name_slave_request();
+                    break;
+                // TODO 1: Handle master/configurator parameter choice, cycle time (comes with start cycle request)
+                case START_SLAVE_CYCLE:
+                    handle_start_cycle_slave_request();
+                    break;
+                case STOP_SLAVE_CYCLE:
+                    handle_stop_cycle_slave_request();
                     break;
                 default:
                     fprintf(stderr, "Unrecognized command received from master process %d\n", sig_info.si_pid);
@@ -155,20 +210,33 @@ static void *signal_handler_thread(void *ignore) {
     return NULL;
 }
 
-static int final() {
-    // Deattach from shared memory
-    if (shmdt(self.shmp)) {
-        fprintf(stderr, "shmdt() call failed!");
+static int destroy_allow_communication_cycle_semaphore() {
+    if (sem_destroy(&self.allow_communication_cycle)) {
+        fprintf(stderr, "sem_destroy() call failed!\n");
         return RTC_ERROR;
     }
-    self.shmp = NULL;
 
     return RTC_SUCCESS;
 }
 
-static int init_timer_semaphore() {
-    if (sem_init(&self.timer_semaphore, 0, 0)) {
-        fprintf(stderr, "sem_init() call failed!");
+static int final() {
+    int ret = RTC_SUCCESS;
+
+    ret = destroy_allow_communication_cycle_semaphore();
+
+    // Deattach from shared memory
+    if (shmdt(self.shmp)) {
+        fprintf(stderr, "shmdt() call failed!\n");
+        ret = RTC_ERROR;
+    }
+    self.shmp = NULL;
+
+    return ret;
+}
+
+static int init_allow_communication_cycle_semaphore() {
+    if (sem_init(&self.allow_communication_cycle, 0, 0)) {
+        fprintf(stderr, "sem_init() call failed!\n");
         return RTC_ERROR;
     }
 
@@ -198,30 +266,30 @@ static int init_shared_memory() {
     return RTC_SUCCESS;
 }
 
-int send_first_signal() {
-    if (kill(self.shmp->master_pid, SIGUSR1)) {
-        fprintf(stderr, "Failed to send signal SIGUSR1 to master process %d\n", self.shmp->master_pid);
+static int init(int argc, char *argv[]) {
+    if (argc != 2) {
+        fprintf(stderr, "Syntax: %s <slave_name>\n", argv[0]);
         return RTC_ERROR;
     }
+
+    int ret;
+
+    memset(&self, 0, sizeof(slave_context_t));
+
+    strcpy(self.name, argv[1]);
+
+    if ((ret = block_signals()) != RTC_SUCCESS) return ret;
+    if ((ret = init_shared_memory()) != RTC_SUCCESS) return ret;
+    if ((ret = init_allow_communication_cycle_semaphore()) != RTC_SUCCESS) return ret;
+
     return RTC_SUCCESS;
 }
 
 int main(int argc, char *argv[]) {
-    if (argc != 2) {
-        fprintf(stderr, "Syntax: %s <slave_name>\n", argv[0]);
-        return 1;
-    }
-    memset(&self, 0, sizeof(slave_context_t));
-
-    strcpy(self.name, argv[1]);
-    printf("[SLAVE] Process id = %d with name %s\n", getpid(), self.name);
-
     int ret;
     pthread_t tid;
 
-    if ((ret = block_signals()) != RTC_SUCCESS) return ret;
-    if ((ret = init_shared_memory()) != RTC_SUCCESS) return ret;
-    if ((ret = init_timer_semaphore()) != RTC_SUCCESS) return ret;
+    if ((ret = init(argc, argv)) != RTC_SUCCESS) return ret;
 
     // Create signal listening thread
     ret = pthread_create(&tid, NULL, signal_handler_thread, NULL);
@@ -237,8 +305,8 @@ int main(int argc, char *argv[]) {
         return RTC_ERROR;
     }
 
-    // TODO: A slave will present all the parameters it has at connect time. The master can request one, more or all parameters.
-    // TODO: communication and interface with master
+    // TODO 1: A slave will present all the parameters it has at connect time. The master can request one, more or all parameters.
+    // TODO 1: communication and interface with master
 
 
     return final();

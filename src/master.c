@@ -289,20 +289,20 @@ static int destroy_signal_semaphores() {
 }
 
 static int final() {
-    int ret;
+    int ret = RTC_SUCCESS;
 
-    if ((ret = destroy_signal_semaphores()) != RTC_SUCCESS) return ret;
+    ret = destroy_signal_semaphores();
 
     // Deattach from shared memory
     if (shmdt(self.shmp)) {
         log_error("shmdt() call failed!");
-        return RTC_ERROR;
+        ret = RTC_ERROR;
     }
     self.shmp = NULL;
 
     log_info("Stopped master!");
     closelog();
-    return RTC_SUCCESS;
+    return ret;
 }
 
 static int block_signals() {

@@ -7,16 +7,21 @@
 typedef struct shmseg_s {
     // Fields modifiable only by slaves
     char name[SLAVE_NAME_SIZE];  // Name string can't contain spaces
-    char string_value[STRING_SIZE];
-    int int_value;
-    bool bool_value;
     response_t res_s_to_m;
 
     // Fields modifiable only by master
     pid_t pid;  // Master assigns shmsegIdx by setting pid of shared memory segment owner
+    int requested_parameters;  // TODO 1: bitwise operations using define or enum
     request_t req_m_to_s;
-    long int communication_cycle_ms; // TODO
+    long int communication_cycle_ms; // TODO 1
     bool is_connected;
+
+    // Fields modifiable by master and slave
+    // TODO 1: Slave sets them, master sets them to a DEFINE reset value. Race condition can occur.
+    // TODO 1: Slave checks if requested values are set to reset value DEFINE, if not it sets error and stops cycle.
+    char string_value[STRING_SIZE];
+    int int_value;
+    bool bool_value;
 } shmseg_t;
 
 typedef struct shm_s {

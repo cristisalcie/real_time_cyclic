@@ -9,8 +9,8 @@ typedef struct slave_context_s {
     char name[SLAVE_NAME_SIZE];
     unsigned int change_name_idx;
 
-    // Signal semaphore to start timer
-    sem_t timer_semaphore;
+    // Signal semaphore to allow parameters communication cycle
+    sem_t allow_communication_cycle; // TODO 1
     int shmsegIdx;
 } slave_context_t;
 
