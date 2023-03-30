@@ -3,7 +3,6 @@
 
 #include <syslog.h>
 #include "common.h"
-#include "m_s_common.h"
 #include "control.h"
 
 #define log_info(str, args...) \

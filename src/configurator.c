@@ -4,12 +4,13 @@
 #include <sys/shm.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
 
 #include "configurator.h"
 
 
 
-static configurator_context_t self = { .shmp = NULL };
+static configurator_context_t self = { .shmp = NULL, .control_shmp = NULL };
 
 
 
@@ -24,11 +25,51 @@ static int block_signals() {
     return RTC_SUCCESS;
 }
 
+// Returns assigned index if successful. NO_IDX if failed.
+static int getAssignedShmsegIdx(pid_t pid) {
+    int shmsegIdx = pid % MAX_SLAVES;
+
+    for (int i = 0; i < MAX_SLAVES; ++i) {
+        if (self.shmp->slave_shmseg[shmsegIdx].pid == pid) {
+            return shmsegIdx;
+        }
+        ++shmsegIdx;
+        shmsegIdx %= MAX_SLAVES;
+    }
+
+    fprintf(stderr, "Failed to find assigned shared memory segment index for process %d\n", pid);
+    return NO_IDX;
+}
+
 static int init_control_shared_memory() {
     int shmid;
 
     // Get or create if not existing shared memory
     shmid = shmget(CONTROL_SHARED_MEMORY_KEY, sizeof(control_shm_t), 0666 | IPC_CREAT);
+    if (shmid == -1) {
+        fprintf(stderr, "shmget() call failed to create shared memory!\n");
+        return RTC_ERROR;
+    }
+    // Attach to shared memory
+    self.control_shmp = shmat(shmid, NULL, 0);
+    if (self.control_shmp == (void*) -1) {
+        fprintf(stderr, "shmmat() call failed to attach to shared memory!\n");
+        return RTC_ERROR;
+    }
+
+    memset(self.control_shmp, 0, sizeof(control_shm_t));
+
+    self.control_shmp->configurator_pid = getpid();
+    fprintf(stderr, "Set self.control_shmp->configurator_pid to %d\n", self.control_shmp->configurator_pid);
+
+    return RTC_SUCCESS;
+}
+
+static int init_shared_memory() {
+    int shmid;
+
+    // Get or create if not existing shared memory
+    shmid = shmget(SHARED_MEMORY_KEY, sizeof(shm_t), 0666);
     if (shmid == -1) {
         fprintf(stderr, "shmget() call failed to create shared memory!\n");
         return RTC_ERROR;
@@ -40,17 +81,12 @@ static int init_control_shared_memory() {
         return RTC_ERROR;
     }
 
-    memset(self.shmp, 0, sizeof(control_shm_t));
-
-    self.shmp->configurator_pid = getpid();
-    fprintf(stderr, "Set self.shmp->configurator_pid to %d\n", self.shmp->configurator_pid);
-
     return RTC_SUCCESS;
 }
 
 static void print_main_menu() {
     printf("\n");
-    for (int i = 0; i <= DISCONNECT_SLAVE; ++i) {
+    for (int i = 0; i < CHANGE_SLAVE_NAME; ++i) {
         switch (i) {
         case START_MASTER:
             printf("%d: Start master\n", i);
@@ -70,6 +106,12 @@ static void print_main_menu() {
         case DISCONNECT_SLAVE:
             printf("%d: Disconnect slave\n", i);
             break;
+        case START_SLAVE_CYCLE:
+            printf("%d: Start slave cycle\n", i);
+            break;
+        case STOP_SLAVE_CYCLE:
+            printf("%d: Stop slave cycle\n", i);
+            break;
         }
     }
 
@@ -88,10 +130,19 @@ static void read_req_code() {
         fprintf(stderr, "Invalid command number. Please insert a number!\n");
         req_code = -1;
     }
-    self.shmp->request = req_code;
+    self.control_shmp->request = req_code;
 
     free(line);
     printf("\n");
+}
+
+static int send_start_cycle_slave_signal() {
+    self.control_shmp->request = START_SLAVE_CYCLE;
+    if (kill(self.master_pid, SIGUSR2)) {
+        fprintf(stderr, "Failed to send signal SIGUSR2 to master process %d\n", self.master_pid);
+        return RTC_ERROR;
+    }
+    return RTC_SUCCESS;
 }
 
 static int send_connect_slave_signal() {
@@ -102,7 +153,75 @@ static int send_connect_slave_signal() {
     return RTC_SUCCESS;
 }
 
-static void wait_connect_slave_response() {
+static void print_slave_data_by_pid(pid_t pid) {
+    int shmsegIdx = getAssignedShmsegIdx(pid);
+    if (shmsegIdx == NO_IDX) return;
+
+    printf("pid: %d\n", pid);
+    printf("name: %s\n", self.shmp->slave_shmseg[shmsegIdx].name);
+    printf("available parameters: ");
+    if (self.shmp->slave_shmseg[shmsegIdx].available_parameters & STRING_PARAMETER_BIT) {
+        printf("string paramater, ");
+    }
+    if (self.shmp->slave_shmseg[shmsegIdx].available_parameters & INT_PARAMETER_BIT) {
+        printf("int paramater, ");
+    }
+    if (self.shmp->slave_shmseg[shmsegIdx].available_parameters & BOOL_PARAMETER_BIT) {
+        printf("bool paramater\n");
+    }
+}
+
+static void wait_connect_slave_response(pid_t pid) {
+    int err;
+    sigset_t sig_set;
+    siginfo_t sig_info;
+    struct timespec timeout = { .tv_sec = 3 };
+
+    sigemptyset(&sig_set);
+    sigaddset(&sig_set, SIGUSR2);
+
+
+    // err = sigwaitinfo(&sig_set, &sig_info);
+    err = sigtimedwait(&sig_set, &sig_info, &timeout);
+    if (err == -1) {
+        perror("sigwaitinfo() call failed!");
+    } else {
+        switch (self.control_shmp->response)
+        {
+        case NACK:
+            printf("Connect slave request failed!\n");
+            break;
+        case ACK:
+            printf("Connect slave request succeded!\n");
+            print_slave_data_by_pid(pid);
+            break;
+        default:
+            fprintf(stderr, "Unrecognized response received!");
+            break;
+        }
+    }
+}
+
+static int wait_start_master_response() {
+    int err;
+    int ret;
+    sigset_t sig_set;
+    siginfo_t sig_info;
+
+    sigemptyset(&sig_set);
+    sigaddset(&sig_set, SIGUSR2);
+
+    err = sigwaitinfo(&sig_set, &sig_info);  // TODO: sigtimedwait
+    if (err == -1) {
+        fprintf(stderr, "sigwaitinfo() call failed!");
+        return RTC_ERROR;
+    } else {
+        if ((ret = init_shared_memory()) != RTC_SUCCESS) return ret;
+    }
+    return RTC_SUCCESS;
+}
+
+static void wait_start_slave_cycle_response() {
     int err;
     sigset_t sig_set;
     siginfo_t sig_info;
@@ -114,13 +233,13 @@ static void wait_connect_slave_response() {
     if (err == -1) {
         fprintf(stderr, "sigwaitinfo() call failed!");
     } else {
-        switch (self.shmp->response)
+        switch (self.control_shmp->response)
         {
         case NACK:
-            printf("Connect slave request failed!\n");
+            printf("Start slave cycle slave request failed! (Maybe already started?)\n");
             break;
         case ACK:
-            printf("Connect slave request succeded!\n");
+            printf("Start slave cycle slave request succeded!\n");
             break;
         default:
             fprintf(stderr, "Unrecognized response received!");
@@ -129,16 +248,36 @@ static void wait_connect_slave_response() {
     }
 }
 
+static int final() {
+    int ret = RTC_SUCCESS;
+
+    // Deattach from control shared memory
+    if (shmdt(self.control_shmp)) {
+        fprintf(stderr, "shmdt() call failed!\n");
+        ret = RTC_ERROR;
+    }
+    self.control_shmp = NULL;
+
+    // Deattach from shared memory
+    if (shmdt(self.shmp)) {
+        fprintf(stderr, "shmdt() call failed!\n");
+        ret = RTC_ERROR;
+    }
+    self.shmp = NULL;
+
+    return ret;
+}
+
 int main(int argc, char *argv[]) {
     int ret;
 
     if ((ret = block_signals()) != RTC_SUCCESS) return ret;
-    if ((ret = init_control_shared_memory()) != RTC_SUCCESS) return ret;   
+    if ((ret = init_control_shared_memory()) != RTC_SUCCESS) return ret;
 
     while(true) {
         print_main_menu();
         read_req_code();
-        switch(self.shmp->request) {
+        switch(self.control_shmp->request) {
         case START_MASTER:
         {
             int fork_pid = fork();
@@ -155,6 +294,7 @@ int main(int argc, char *argv[]) {
             } else {
                 // Parent process
                 self.master_pid = fork_pid;
+                if ((ret = wait_start_master_response()) != RTC_SUCCESS) return ret;
                 printf("Started master process %d\n\n", fork_pid);
             }
             break;
@@ -190,6 +330,29 @@ int main(int argc, char *argv[]) {
                 free(line);
             }
             printf("\n");
+
+            printf("Set slave parameters (<XYZ> where X = STRING, Y = INT, Z = BOOL; X | Y | Z = 1 => parameter available otherise not available): ");
+            char XYZ[] = "000";
+            {
+                size_t read_characters;
+                size_t line_length = MAX_LINE_LENGTH;
+                char *line = (char*)calloc(MAX_LINE_LENGTH, sizeof(char));
+
+                read_characters = getline(&line, &line_length, stdin);
+                if (read_characters == -1) {
+                    printf("Failed to read parameters line\n");
+                }
+
+                if (line[0] == '1')
+                    XYZ[0] = '1';
+                if (line[1] == '1')
+                    XYZ[1] = '1';
+                if (line[2] == '1')
+                    XYZ[2] = '1';
+
+                free(line);
+            }
+            printf("\n");
             
             int fork_pid = fork();
             if (fork_pid == 0) {
@@ -197,7 +360,8 @@ int main(int argc, char *argv[]) {
                 char *arg_Ptr[3];
                 arg_Ptr[0] = "slave";
                 arg_Ptr[1] = slave_name;
-                arg_Ptr[2] = NULL;
+                arg_Ptr[2] = XYZ;
+                arg_Ptr[3] = NULL;
 
                 ret = execv(SLAVE_BIN_PATH, arg_Ptr);
                 if (ret == -1) {
@@ -206,9 +370,7 @@ int main(int argc, char *argv[]) {
             } else {
                 // Parent process
                 // fork.pid is slave_pid
-                // TOOD: save slave_pids in self structure to be able to disconnect/delete slave
-
-                printf("Started slave process %d with name %s\n\n", fork_pid, slave_name);
+                printf("Started slave process %d with name %s and available parameters %s\n\n", fork_pid, slave_name, XYZ);
             }
             break;
         }
@@ -220,27 +382,201 @@ int main(int argc, char *argv[]) {
             pid_t slave_pid;
 
             printf("Insert slave pid to connect: ");
-            scanf("%d", &slave_pid);
+
+            {
+                size_t read_characters;
+                size_t line_length = MAX_LINE_LENGTH;
+                char *line = (char*)calloc(MAX_LINE_LENGTH, sizeof(char));
+
+                read_characters = getline(&line, &line_length, stdin);
+
+                if (read_characters < 1 || line[0] < '0' || line[0] > '9') {
+                    fprintf(stderr, "Invalid process id!\n");
+                    free(line);
+                    break;
+                }
+
+                sscanf(line, "%d", &slave_pid);
+                free(line);
+            }
             printf("\n");
 
-            // TODO 5: save slave_pids in self structure to be able to disconnect/delete slave
-            // TODO 5: Send correct pid only
+            // TODO 5: save slave_pids in self structure to be able to see pids of disconnected slaves (can see connected slaves through self.shmp)
 
-            self.shmp->connect_disconnect_slave_pid = slave_pid;
+            self.control_shmp->affected_slave_pid = slave_pid;
             
             if (send_connect_slave_signal()) {
                 // Failed to send connect signal
                 break;
             }
 
-            wait_connect_slave_response();
+            wait_connect_slave_response(slave_pid);
 
-            // TODO 2: Receive what parameters can be requested from slave in order to choose one
-            // TODO 2: Be asked at how many miliseconds we will receive parameters.
             break;
         }
         case DISCONNECT_SLAVE:
             printf("TODO: Disconnect slave\n");
+            break;
+        case START_SLAVE_CYCLE:
+        {
+            int connected_pids_iter = 0;
+            pid_t connected_pids[MAX_SLAVES];
+            pid_t slave_pid;
+            bool valid_pid = false;
+
+            // Inform user of available connected slave pids
+            printf("Available connected slaves pids: ");
+            for (int i = 0; i < MAX_SLAVES; ++i) {
+                if (self.shmp->slave_shmseg[i].is_connected) {
+                    printf(" %d,", self.shmp->slave_shmseg[i].pid);
+                    connected_pids[connected_pids_iter] = self.shmp->slave_shmseg[i].pid;
+                    ++connected_pids_iter;
+                }
+            }
+            printf("\n");
+            printf("Insert slave pid to start cycle: ");
+            {
+                size_t read_characters;
+                size_t line_length = MAX_LINE_LENGTH;
+                char *line = (char*)calloc(MAX_LINE_LENGTH, sizeof(char));
+
+                read_characters = getline(&line, &line_length, stdin);
+
+                if (read_characters < 1 || line[0] < '0' || line[0] > '9') {
+                    fprintf(stderr, "Invalid process id!\n");
+                    free(line);
+                    break;
+                }
+
+                sscanf(line, "%d", &slave_pid);
+                free(line);
+            }
+            printf("\n");
+
+            for (int i = 0; i < connected_pids_iter; ++i) {
+                if (slave_pid == connected_pids[i]) {
+                    valid_pid = true;
+                    break;
+                }
+            }
+            if (!valid_pid) {
+                printf("Not a valid slave pid!\n");
+                break;
+            }
+
+            int shmsegIdx = getAssignedShmsegIdx(slave_pid);
+
+            // Ask user which available parameters to request
+            if (self.shmp->slave_shmseg[shmsegIdx].available_parameters & STRING_PARAMETER_BIT) {
+                char parameter_response;
+                printf("request string parameter ? (y/n) ");
+                {
+                    size_t read_characters;
+                    size_t line_length = MAX_LINE_LENGTH;
+                    char *line = (char*)calloc(MAX_LINE_LENGTH, sizeof(char));
+
+                    read_characters = getline(&line, &line_length, stdin);
+
+                    if (read_characters < 1) {
+                        parameter_response = 'n';
+                        free(line);
+                        break;
+                    }
+
+                    sscanf(line, "%c", &parameter_response);
+                    free(line);
+                }
+                switch (parameter_response)
+                {
+                case 'y':
+                case 'Y':
+                    self.shmp->slave_shmseg[shmsegIdx].requested_parameters |= STRING_PARAMETER_BIT;
+                    break;
+                }
+            }
+            if (self.shmp->slave_shmseg[shmsegIdx].available_parameters & INT_PARAMETER_BIT) {
+                char parameter_response;
+                printf("request int parameter ? (y/n) ");
+                {
+                    size_t read_characters;
+                    size_t line_length = MAX_LINE_LENGTH;
+                    char *line = (char*)calloc(MAX_LINE_LENGTH, sizeof(char));
+
+                    read_characters = getline(&line, &line_length, stdin);
+
+                    if (read_characters < 1) {
+                        parameter_response = 'n';
+                        free(line);
+                        break;
+                    }
+
+                    sscanf(line, "%c", &parameter_response);
+                    free(line);
+                }
+                switch (parameter_response)
+                {
+                case 'y':
+                case 'Y':
+                    self.shmp->slave_shmseg[shmsegIdx].requested_parameters |= INT_PARAMETER_BIT;
+                    break;
+                }
+            }
+            if (self.shmp->slave_shmseg[shmsegIdx].available_parameters & BOOL_PARAMETER_BIT) {
+                char parameter_response;
+                printf("request bool parameter ? (y/n) ");
+                {
+                    size_t read_characters;
+                    size_t line_length = MAX_LINE_LENGTH;
+                    char *line = (char*)calloc(MAX_LINE_LENGTH, sizeof(char));
+
+                    read_characters = getline(&line, &line_length, stdin);
+
+                    if (read_characters < 1) {
+                        parameter_response = 'n';
+                        free(line);
+                        break;
+                    }
+
+                    sscanf(line, "%c", &parameter_response);
+                    free(line);
+                }
+                switch (parameter_response)
+                {
+                case 'y':
+                case 'Y':
+                    self.shmp->slave_shmseg[shmsegIdx].requested_parameters |= BOOL_PARAMETER_BIT;
+                    break;
+                }
+            }
+            printf("\n");
+
+            printf("Insert requested parameters time interval (ms): ");
+            {
+                long int req_cycle_interval_ms;
+                size_t line_length = MAX_LINE_LENGTH;
+
+                char *line = (char*)calloc(MAX_LINE_LENGTH, sizeof(char));
+
+                getline(&line, &line_length, stdin);
+
+                if (sscanf(line, "%ld", &req_cycle_interval_ms) != 1) {
+                    fprintf(stderr, "Invalid number. Please insert a number!\n");
+                    break;
+                }
+                self.shmp->slave_shmseg[shmsegIdx].communication_cycle_ms = req_cycle_interval_ms;
+
+                free(line);
+            }
+            printf("\n");
+
+            if (send_start_cycle_slave_signal() == RTC_SUCCESS) {
+                wait_start_slave_cycle_response();
+            }
+            break;
+        }
+        case STOP_SLAVE_CYCLE:
+            printf("TODO: Stop slave cycle\n");
+            // TODO 2: Create stop slave cycle request and send it
             break;
         default:
             printf("Unrecognized request command, continuing...\n");
@@ -253,5 +589,5 @@ int main(int argc, char *argv[]) {
     // children processes become orphans and get adopted by init process.
     // Currently not possible to exit normally. (easiest/fastest way)
     
-    return 0;
+    return final();
 }

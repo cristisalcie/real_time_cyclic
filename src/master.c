@@ -31,7 +31,7 @@ static int assignShmsegIdx(pid_t pid) {
     return NO_IDX;
 }
 
-// Returns assigned index if successful. NO_PID if failed.
+// Returns assigned index if successful. NO_IDX if failed.
 static int getAssignedShmsegIdx(pid_t pid) {
     int shmsegIdx = pid % MAX_SLAVES;
 
@@ -84,9 +84,62 @@ static void *slave_processor_detached_thread(void *data) {
             return NULL;
         }
 
-        // TODO: handle possible outcomes
+        shmseg_t *slave_shmseg = &self.shmp->slave_shmseg[shmsegIdx];
+
+        switch (slave_shmseg->req_s_to_m)
+        {
+        case SIGNAL_MASTER_PARAMETER:
+            if (slave_shmseg->requested_parameters & STRING_PARAMETER_BIT) {
+                log_info("Received from slave process %d string parameter %s", slave_shmseg->pid, slave_shmseg->string_value);
+                memset(slave_shmseg->string_value, STRING_VALUE_UNDEFINED, STRING_SIZE);
+            }
+            if (slave_shmseg->requested_parameters & INT_PARAMETER_BIT) {
+                log_info("Received from slave process %d int parameter %d", slave_shmseg->pid, slave_shmseg->int_value);
+                slave_shmseg->int_value = INT_VALUE_UNDEFINED;
+            }
+            if (slave_shmseg->requested_parameters & BOOL_PARAMETER_BIT) {
+                log_info("Received from slave process %d bool parameter %s", slave_shmseg->pid, slave_shmseg->bool_value ? "true" : "false");
+                slave_shmseg->bool_value = BOOL_VALUE_UNDEFINED;
+            }
+
+            slave_shmseg->res_m_to_s = ACK;
+            if (kill(slave_shmseg->pid, SIGUSR1)) {
+                log_error("Failed to send ACK signal for SIGNAL_MASTER_PARAMETER to slave process %d!", slave_shmseg->pid);
+            }
+            continue;
+        case NO_REQUEST:
+            // Did not receive a request from slave! Continue checking if received response from slave
+            break;
+        default:
+            log_error("Unrecognized request from slave process %d!", slave_shmseg->pid);
+            continue;
+        }
+
+
         switch (self.shmp->slave_shmseg[shmsegIdx].req_m_to_s)
         {
+        case START_SLAVE_CYCLE:
+            switch (self.shmp->slave_shmseg[shmsegIdx].res_s_to_m)
+            {
+            case NACK:
+                // Forward response to configurator
+                self.control_shmp->response = NACK;
+                if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
+                    log_error("Failed to send NACK signal to configurator!");
+                }
+                break;
+            case ACK:
+                // Forward response to configurator
+                self.control_shmp->response = ACK;
+                if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
+                    log_error("Failed to send ACK signal to configurator!");
+                }
+                break;
+            default:
+                log_error("Unrecognized response for start slave cycle request received!");
+                break;
+            }
+            break;
         case CHANGE_SLAVE_NAME:
             switch (self.shmp->slave_shmseg[shmsegIdx].res_s_to_m)
             {
@@ -107,7 +160,6 @@ static void *slave_processor_detached_thread(void *data) {
             log_error("Received response for unrecognized request!");
             break;
         }
-
     }
 
     return NULL;
@@ -141,7 +193,7 @@ static int create_slave_processor_detached_thread(int shmsegIdx) {
 }
 
 static int send_connect_slave_request() {
-    pid_t slave_pid = self.control_shmp->connect_disconnect_slave_pid;
+    pid_t slave_pid = self.control_shmp->affected_slave_pid;
     
     int shmsegIdx = getAssignedShmsegIdx(slave_pid);
     if (shmsegIdx == NO_IDX) {
@@ -162,6 +214,27 @@ static int send_connect_slave_request() {
 
     if (kill(slave_pid, SIGUSR1)) {
         log_error("Failed to send connect slave request to process %d!", slave_pid);
+        if (shmsegIdx != NO_IDX)
+            self.shmp->slave_shmseg[shmsegIdx].pid = NO_PID;
+
+        return RTC_ERROR;
+    }
+    return RTC_SUCCESS;
+}
+
+static int send_start_cycle_slave_request() {
+    pid_t slave_pid = self.control_shmp->affected_slave_pid;
+
+    int shmsegIdx = getAssignedShmsegIdx(slave_pid);
+    if (shmsegIdx == NO_IDX) {
+        log_debug("Process %d has no assigned index!", slave_pid);
+        return RTC_ERROR;
+    }
+
+    self.shmp->slave_shmseg[shmsegIdx].req_m_to_s = START_SLAVE_CYCLE;
+
+    if (kill(slave_pid, SIGUSR1)) {
+        log_error("Failed to send start cycle slave request to process %d!", slave_pid);
         return RTC_ERROR;
     }
     return RTC_SUCCESS;
@@ -179,6 +252,13 @@ static int handle_configurator_connect_slave_request() {
     return send_connect_slave_request();
 }
 static int handle_configurator_disconnect_slave_request() {
+    // TODO
+    return RTC_SUCCESS;
+}
+static int handle_start_cycle_slave_request() {
+    return send_start_cycle_slave_request();;
+}
+static int handle_stop_cycle_slave_request() {
     // TODO
     return RTC_SUCCESS;
 }
@@ -207,7 +287,7 @@ static void *signal_handler_thread(void *ignore) {
                     continue;
                 } else {
                     if (self.shmp->slave_shmseg[shmsegIdx].is_connected) {
-                        // Allow tread allocated for pid to process
+                        // Allow thread allocated for pid to process
                         if (sem_post(&(self.sig_semaphore[shmsegIdx]))) {
                             log_error("sem_post() call failed, continuing...");
                             continue;
@@ -230,6 +310,7 @@ static void *signal_handler_thread(void *ignore) {
                             }
                             self.shmp->slave_shmseg[shmsegIdx].is_connected = true;
 
+                            // Forward response to configurator
                             self.control_shmp->response = ACK;
                             if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
                                 log_error("Failed to send ACK signal to configurator!");
@@ -256,6 +337,7 @@ static void *signal_handler_thread(void *ignore) {
                     break;
                 case CONNECT_SLAVE:
                     if (handle_configurator_connect_slave_request() != RTC_SUCCESS) {
+                        // ACK response is send to configurator when ACK response received from slave
                         self.control_shmp->response = NACK;
                         if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
                             log_error("Failed to send NACK signal to configurator!");
@@ -264,6 +346,18 @@ static void *signal_handler_thread(void *ignore) {
                     break;
                 case DISCONNECT_SLAVE:
                     handle_configurator_disconnect_slave_request();
+                    break;
+                case START_SLAVE_CYCLE:
+                    if (handle_start_cycle_slave_request() != RTC_SUCCESS) {
+                        // ACK response is send to configurator when ACK response received from slave
+                        self.control_shmp->response = NACK;
+                        if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
+                            log_error("Failed to send NACK signal to configurator!");
+                        }
+                    }
+                    break;
+                case STOP_SLAVE_CYCLE:
+                    handle_stop_cycle_slave_request();
                     break;
                 default:
                     log_error("Received unknown command from configurator process %d", self.control_shmp->configurator_pid);
@@ -372,8 +466,14 @@ static int init_shared_memory() {
 
     for (int i = 0; i < MAX_SLAVES; ++i) {
         self.shmp->slave_shmseg[i].pid = NO_PID;
-        // TODO: Configurable fields
         self.shmp->slave_shmseg[i].communication_cycle_ms = DEFAULT_COMMUNICATION_CYCLE_MS;
+        self.shmp->slave_shmseg[i].req_m_to_s = NO_REQUEST;
+        self.shmp->slave_shmseg[i].req_s_to_m = NO_REQUEST;
+        self.shmp->slave_shmseg[i].res_m_to_s = NO_RESPONSE;
+        self.shmp->slave_shmseg[i].res_s_to_m = NO_RESPONSE;
+        memset(self.shmp->slave_shmseg[i].string_value, STRING_VALUE_UNDEFINED, STRING_SIZE);
+        self.shmp->slave_shmseg[i].int_value = INT_VALUE_UNDEFINED;
+        self.shmp->slave_shmseg[i].bool_value = BOOL_VALUE_UNDEFINED;
     }
 
     return RTC_SUCCESS;
@@ -405,6 +505,12 @@ int main(int argc, char *argv[]) {
     ret = pthread_create(&tid, NULL, signal_handler_thread, NULL);
     if (ret) {
         log_error("pthread_create() to create signal handler thread failed");
+        return RTC_ERROR;
+    }
+
+    // Full initialization complete, send response to configurator
+    if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
+        log_error("Failed to send initialization complete response to configurator!");
         return RTC_ERROR;
     }
 

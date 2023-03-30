@@ -6,6 +6,7 @@
 #include <string.h>
 #include <semaphore.h>
 #include <pthread.h>
+#include <time.h>
 #include "slave.h"
 
 
@@ -48,7 +49,42 @@ static void *slave_communication_cycle_detached_thread(void *ignore) {
             return NULL;
         }
 
-        // TODO 1: sem_post at the end to continue looping
+        if (self.shmp->slave_shmseg[self.shmsegIdx].req_s_to_m == SIGNAL_MASTER_PARAMETER) {
+            // TODO: Stop cycle
+            // TODO: Set error for master
+            // TODO: Send signal to master
+            fprintf(stderr, "TODO: Handle last request not handled yet by master!\n");
+        }
+
+        int rand_value = rand();
+        if (self.shmp->slave_shmseg[self.shmsegIdx].requested_parameters & STRING_PARAMETER_BIT) {
+            char chr_rand = 'A' + rand_value % ('Z' - 'A' + 1) ;
+            self.shmp->slave_shmseg[self.shmsegIdx].string_value[0] = chr_rand;
+            self.shmp->slave_shmseg[self.shmsegIdx].string_value[1] = chr_rand + 1;
+            self.shmp->slave_shmseg[self.shmsegIdx].string_value[2] = chr_rand + 2;
+        }
+        if (self.shmp->slave_shmseg[self.shmsegIdx].requested_parameters & INT_PARAMETER_BIT) {
+            self.shmp->slave_shmseg[self.shmsegIdx].int_value = rand_value;
+        }
+        if (self.shmp->slave_shmseg[self.shmsegIdx].requested_parameters & BOOL_PARAMETER_BIT) {
+            self.shmp->slave_shmseg[self.shmsegIdx].bool_value = rand_value % 2;
+        }
+
+        self.shmp->slave_shmseg[self.shmsegIdx].req_s_to_m = SIGNAL_MASTER_PARAMETER;
+        if (kill(self.shmp->master_pid, SIGUSR1)) {
+            fprintf(stderr, "Failed to send \"signal master parameter\" signal to master!\n");
+        }
+
+        if (usleep(self.shmp->slave_shmseg[self.shmsegIdx].communication_cycle_ms)) {
+            fprintf(stderr, "usleep() failed! Communication cycle thread killed!\n");
+            break;
+        }
+
+        // sem_post() at the end to continue looping
+        if (sem_post(&self.allow_communication_cycle)) {
+            fprintf(stderr, "sem_post() call failed, continuing...\n");
+            continue;
+        }
     }
 
     return NULL;
@@ -85,12 +121,9 @@ static void handle_connect_slave_request() {
 
     // Fill shared memory structure
     strcpy(shmseg->name, self.name);
+    shmseg->available_parameters = self.available_parameters;
 
-    // TODO 1: Send available parameters
-    // TODO 1: Wait for master/configurator choice
-    // TODO 1: Start communication cycle
-
-    // Send ACK response back to master with available parameters
+    // Send ACK response back to master
     shmseg->res_s_to_m = ACK;
     if (kill(self.shmp->master_pid, SIGUSR1)) {
         fprintf(stderr, "Failed to send response back to master!\n");
@@ -142,7 +175,32 @@ static void handle_change_name_slave_request() {
 }
 
 static void handle_start_cycle_slave_request() {
-    // TODO 1
+    if (self.cycle_started) {
+        // TODO 20: Set error log msg variable for master
+        self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = NACK;
+        if (kill(self.shmp->master_pid, SIGUSR1)) {
+            fprintf(stderr, "Failed to send response back to master!\n");
+        }
+        return;
+    }
+
+    if (sem_post(&self.allow_communication_cycle)) {
+        fprintf(stderr, "sem_post() call failed!\n");
+
+        // TODO 20: Set error log msg variable for master
+        self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = NACK;
+        if (kill(self.shmp->master_pid, SIGUSR1)) {
+            fprintf(stderr, "Failed to send response back to master!\n");
+        }
+        return;
+    }
+
+    self.cycle_started = true;
+
+    self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = ACK;
+    if (kill(self.shmp->master_pid, SIGUSR1)) {
+        fprintf(stderr, "Failed to send response back to master!\n");
+    }
 }
 
 static void handle_stop_cycle_slave_request() {
@@ -157,7 +215,6 @@ static void *signal_handler_thread(void *ignore) {
     sigaddset(&sig_set, SIGUSR1);
 
     while (true) {
-        printf("[SLAVE %s %d] Waiting for signal!\n", self.name, getpid());
         err = sigwaitinfo(&sig_set, &sig_info);
         if (err == -1) {
             fprintf(stderr, "sigwaitinfo() call failed!\n");
@@ -168,7 +225,7 @@ static void *signal_handler_thread(void *ignore) {
             }
             
             if (sig_info.si_signo == SIGUSR1) {
-                printf("[SLAVE %s %d] Processing signal SIGUSR1 from process %d\n", self.name, getpid(), sig_info.si_pid);
+                // printf("[SLAVE %s %d] Processing signal SIGUSR1 from process %d\n", self.name, getpid(), sig_info.si_pid);
 
                 if (self.shmsegIdx == NO_IDX) {
                     // First time getting shared memory index.
@@ -179,6 +236,23 @@ static void *signal_handler_thread(void *ignore) {
                         fprintf(stderr, "Process %d has no assigned shared memory index, continuing...\n", getpid());
                         continue;
                     }
+                }
+
+                switch (self.shmp->slave_shmseg[self.shmsegIdx].res_m_to_s)
+                {
+                case ACK:
+                    self.shmp->slave_shmseg[self.shmsegIdx].req_s_to_m = NO_REQUEST;
+                    self.shmp->slave_shmseg[self.shmsegIdx].res_m_to_s = NO_RESPONSE;
+                    continue;
+                case NACK:
+                    // Ignore
+                    continue;
+                case NO_RESPONSE:
+                    // Did not receive a response from master! Continue checking if received request from master.
+                    break;
+                default:
+                    fprintf(stderr, "Unrecognized response received from master process %d\n", sig_info.si_pid);
+                    continue;
                 }
 
                 switch (self.shmp->slave_shmseg[self.shmsegIdx].req_m_to_s)
@@ -192,7 +266,6 @@ static void *signal_handler_thread(void *ignore) {
                 case CHANGE_SLAVE_NAME:
                     handle_change_name_slave_request();
                     break;
-                // TODO 1: Handle master/configurator parameter choice, cycle time (comes with start cycle request)
                 case START_SLAVE_CYCLE:
                     handle_start_cycle_slave_request();
                     break;
@@ -267,8 +340,8 @@ static int init_shared_memory() {
 }
 
 static int init(int argc, char *argv[]) {
-    if (argc != 2) {
-        fprintf(stderr, "Syntax: %s <slave_name>\n", argv[0]);
+    if (argc != 3) {
+        fprintf(stderr, "Syntax: %s <slave_name> <available_parameters>\n", argv[0]);
         return RTC_ERROR;
     }
 
@@ -277,10 +350,19 @@ static int init(int argc, char *argv[]) {
     memset(&self, 0, sizeof(slave_context_t));
 
     strcpy(self.name, argv[1]);
+    if (argv[2][0] == '1')
+        self.available_parameters |= STRING_PARAMETER_BIT;
+    if (argv[2][1] == '1')
+        self.available_parameters |= INT_PARAMETER_BIT;
+    if (argv[2][2] == '1')
+        self.available_parameters |= BOOL_PARAMETER_BIT;
 
     if ((ret = block_signals()) != RTC_SUCCESS) return ret;
     if ((ret = init_shared_memory()) != RTC_SUCCESS) return ret;
     if ((ret = init_allow_communication_cycle_semaphore()) != RTC_SUCCESS) return ret;
+    if ((ret = create_communication_cycle_detached_thread()) != RTC_SUCCESS) return ret;
+
+    srand(time(NULL));
 
     return RTC_SUCCESS;
 }
