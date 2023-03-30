@@ -51,7 +51,7 @@ static void *slave_communication_cycle_detached_thread(void *ignore) {
 
         if (self.shmp->slave_shmseg[self.shmsegIdx].req_s_to_m == SIGNAL_MASTER_PARAMETER) {
             // TODO: Stop cycle
-            // TODO: Set error for master
+            // TODO 0: Set error for master
             // TODO: Send signal to master
             fprintf(stderr, "TODO: Handle last request not handled yet by master!\n");
         }
@@ -154,7 +154,7 @@ static void handle_change_name_slave_request() {
     ++prev_change_name_idx;
     if (prev_change_name_idx < self.change_name_idx) {
         // Index overflow send NACK
-        // TODO: Set error message for master to log
+        // TODO 0: Set error message for master to log
         self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = NACK;
         if (kill(self.shmp->master_pid, SIGUSR1)) {
             fprintf(stderr, "Failed to send response back to master!\n");
@@ -176,7 +176,7 @@ static void handle_change_name_slave_request() {
 
 static void handle_start_cycle_slave_request() {
     if (self.cycle_started) {
-        // TODO 20: Set error log msg variable for master
+        // TODO 0: Set error log msg variable for master
         self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = NACK;
         if (kill(self.shmp->master_pid, SIGUSR1)) {
             fprintf(stderr, "Failed to send response back to master!\n");
@@ -187,7 +187,7 @@ static void handle_start_cycle_slave_request() {
     if (sem_post(&self.allow_communication_cycle)) {
         fprintf(stderr, "sem_post() call failed!\n");
 
-        // TODO 20: Set error log msg variable for master
+        // TODO 0: Set error log msg variable for master
         self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = NACK;
         if (kill(self.shmp->master_pid, SIGUSR1)) {
             fprintf(stderr, "Failed to send response back to master!\n");
@@ -232,7 +232,7 @@ static void *signal_handler_thread(void *ignore) {
                     self.shmsegIdx = getAssignedShmsegIdx(getpid());
                     if (self.shmsegIdx == NO_IDX) {
                         // Process has not been assigned a shared memory segment yet.
-                        // TODO: Send NACK to master with error message
+                        // TODO 0: Send NACK to master with error message
                         fprintf(stderr, "Process %d has no assigned shared memory index, continuing...\n", getpid());
                         continue;
                     }
@@ -274,7 +274,7 @@ static void *signal_handler_thread(void *ignore) {
                     break;
                 default:
                     fprintf(stderr, "Unrecognized command received from master process %d\n", sig_info.si_pid);
-                    // TODO: Send NACK to master with error message
+                    // TODO 0: Send NACK to master with error message
                     break;
                 }
             }
@@ -386,10 +386,6 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "pthread_join() to join signal handler thread failed\n");
         return RTC_ERROR;
     }
-
-    // TODO 1: A slave will present all the parameters it has at connect time. The master can request one, more or all parameters.
-    // TODO 1: communication and interface with master
-
 
     return final();
 }

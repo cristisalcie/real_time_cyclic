@@ -11,7 +11,7 @@ typedef struct slave_context_s {
     bool cycle_started;
 
     // Signal semaphore to allow parameters communication cycle
-    sem_t allow_communication_cycle; // TODO 1
+    sem_t allow_communication_cycle;
     int shmsegIdx;
 } slave_context_t;
 

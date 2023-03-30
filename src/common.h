@@ -24,6 +24,8 @@
 #define INT_VALUE_UNDEFINED -1
 #define BOOL_VALUE_UNDEFINED -1
 
+#define WAIT_TIMEOUT_SECONDS 3
+
 typedef enum {
     START_MASTER,
     STOP_MASTER,
@@ -31,18 +33,18 @@ typedef enum {
     DELETE_SLAVE,
     CONNECT_SLAVE,
     DISCONNECT_SLAVE,
-    START_SLAVE_CYCLE, // TODO 1
+    START_SLAVE_CYCLE,
     STOP_SLAVE_CYCLE,  // TODO 1
     CHANGE_SLAVE_NAME,
     SIGNAL_MASTER_PARAMETER,  // Used by slave in request
-    NO_REQUEST,  // Currently only used for req from slave to master
+    NO_REQUEST,  // Currently only used for req from slave to master TODO 0 SET THIS FOR ALL REQUESTS
     REQUEST_SIZE
 } request_t;
 
 typedef enum {
     NACK,
     ACK,
-    NO_RESPONSE, // Currently only used for res from master to slave
+    NO_RESPONSE, // Currently only used for res from master to slave TODO 0 SET THIS FOR ALL RESPONSES
     RESPONSE_SIZE
 } response_t;
 

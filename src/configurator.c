@@ -175,16 +175,14 @@ static void wait_connect_slave_response(pid_t pid) {
     int err;
     sigset_t sig_set;
     siginfo_t sig_info;
-    struct timespec timeout = { .tv_sec = 3 };
+    struct timespec timeout = { .tv_sec = WAIT_TIMEOUT_SECONDS };
 
     sigemptyset(&sig_set);
     sigaddset(&sig_set, SIGUSR2);
 
-
-    // err = sigwaitinfo(&sig_set, &sig_info);
     err = sigtimedwait(&sig_set, &sig_info, &timeout);
     if (err == -1) {
-        perror("sigwaitinfo() call failed!");
+        perror("sigtimedwait() call failed!");
     } else {
         switch (self.control_shmp->response)
         {
@@ -207,13 +205,14 @@ static int wait_start_master_response() {
     int ret;
     sigset_t sig_set;
     siginfo_t sig_info;
+    struct timespec timeout = { .tv_sec = WAIT_TIMEOUT_SECONDS };
 
     sigemptyset(&sig_set);
     sigaddset(&sig_set, SIGUSR2);
 
-    err = sigwaitinfo(&sig_set, &sig_info);  // TODO: sigtimedwait
+    err = sigtimedwait(&sig_set, &sig_info, &timeout);
     if (err == -1) {
-        fprintf(stderr, "sigwaitinfo() call failed!");
+        perror("sigtimedwait() call failed!");
         return RTC_ERROR;
     } else {
         if ((ret = init_shared_memory()) != RTC_SUCCESS) return ret;
@@ -225,13 +224,14 @@ static void wait_start_slave_cycle_response() {
     int err;
     sigset_t sig_set;
     siginfo_t sig_info;
+    struct timespec timeout = { .tv_sec = WAIT_TIMEOUT_SECONDS };
 
     sigemptyset(&sig_set);
     sigaddset(&sig_set, SIGUSR2);
 
-    err = sigwaitinfo(&sig_set, &sig_info);
+    err = sigtimedwait(&sig_set, &sig_info, &timeout);
     if (err == -1) {
-        fprintf(stderr, "sigwaitinfo() call failed!");
+        perror("sigtimedwait() call failed!");
     } else {
         switch (self.control_shmp->response)
         {
