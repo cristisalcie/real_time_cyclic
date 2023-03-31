@@ -567,11 +567,17 @@ int main(int argc, char *argv[]) {
                     fprintf(stderr, "Invalid number. Please insert a number!\n");
                     break;
                 }
+                if (req_cycle_interval_ms <= 0) {
+                    fprintf(stderr, "Invalid number. Can't be negative number or 0!\n");
+                    break;
+                }
                 self.shmp->slave_shmseg[shmsegIdx].communication_cycle_us = req_cycle_interval_ms * 1000;
 
                 free(line);
             }
             printf("\n");
+
+            self.control_shmp->affected_slave_pid = slave_pid;
 
             if (send_start_cycle_slave_request() == RTC_SUCCESS) {
                 wait_start_slave_cycle_response();

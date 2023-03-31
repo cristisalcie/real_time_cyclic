@@ -77,6 +77,10 @@ static void *slave_communication_cycle_detached_thread(void *ignore) {
             return NULL;
         }
 
+        if (self.shmp->slave_shmseg[self.shmsegIdx].communication_cycle_us == NOT_SET_ERROR_COMMUNICATION_CYCLE_MS) {
+            // TODO (already done in master)
+        }
+
         if (usleep(self.shmp->slave_shmseg[self.shmsegIdx].communication_cycle_us)) {
             fprintf(stderr, "usleep() failed! Communication cycle thread killed!\n");
             break;

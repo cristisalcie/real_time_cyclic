@@ -310,7 +310,7 @@ static int init_shared_memory() {
 
     for (int i = 0; i < MAX_SLAVES; ++i) {
         self.shmp->slave_shmseg[i].pid = NO_PID;
-        self.shmp->slave_shmseg[i].communication_cycle_us = DEFAULT_COMMUNICATION_CYCLE_MS * 1000;
+        self.shmp->slave_shmseg[i].communication_cycle_us = NOT_SET_ERROR_COMMUNICATION_CYCLE_MS;
         self.shmp->slave_shmseg[i].req_m_to_s = NO_REQUEST;
         self.shmp->slave_shmseg[i].req_s_to_m = NO_REQUEST;
         self.shmp->slave_shmseg[i].res_m_to_s = NO_RESPONSE;
@@ -454,6 +454,8 @@ static void *signal_handler_thread(void *ignore) {
 int send_change_name_slave_request(int shmsegIdx) {
     pid_t slave_pid = self.shmp->slave_shmseg[shmsegIdx].pid;
 
+    log_debug("send_change_name_slave_request to process %d", slave_pid);
+
     self.shmp->slave_shmseg[shmsegIdx].req_m_to_s = CHANGE_SLAVE_NAME;
     if (kill(slave_pid, SIGUSR1)) {
         log_error("Failed to send change name slave request to process %d!", slave_pid);
@@ -482,6 +484,7 @@ int send_connect_slave_request() {
     
     self.shmp->slave_shmseg[shmsegIdx].req_m_to_s = CONNECT_SLAVE;
 
+    log_debug("send_connect_slave_request to process %d", slave_pid);
     if (kill(slave_pid, SIGUSR1)) {
         log_error("Failed to send connect slave request to process %d!", slave_pid);
         if (shmsegIdx != NO_IDX)
@@ -501,8 +504,14 @@ int send_start_cycle_slave_request() {
         return RTC_ERROR;
     }
 
+    if (self.shmp->slave_shmseg[shmsegIdx].communication_cycle_us == NOT_SET_ERROR_COMMUNICATION_CYCLE_MS) {
+        log_error("Process %d has not been set communication cycle variable!", slave_pid);
+        return RTC_ERROR;
+    }
+
     self.shmp->slave_shmseg[shmsegIdx].req_m_to_s = START_SLAVE_CYCLE;
 
+    log_debug("send_start_cycle_slave_request to process %d", slave_pid);
     if (kill(slave_pid, SIGUSR1)) {
         log_error("Failed to send start cycle slave request to process %d!", slave_pid);
         return RTC_ERROR;
@@ -545,6 +554,7 @@ int handle_stop_cycle_slave_request() {
     // TODO
     return RTC_SUCCESS;
 }
+
 
 int main(int argc, char *argv[]) {
     init(); // TODO: Failed initialization => end program

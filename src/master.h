@@ -26,8 +26,6 @@
         syslog(LOG_WARNING, "[WARNING] " str " (%s, %s, %d)", ##args, __FILE__, __func__, __LINE__); \
     } while(0)
 
-#define DEFAULT_COMMUNICATION_CYCLE_MS 50
-
 typedef struct master_context_s {
     shm_t *shmp;
     control_shm_t *control_shmp;
