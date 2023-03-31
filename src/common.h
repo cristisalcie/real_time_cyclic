@@ -67,9 +67,8 @@ typedef struct shmseg_s {
     long int communication_cycle_us;
 
     // Fields modifiable by master and slave
-    // TODO 1: Slave sets them, master sets them to a DEFINE reset value. Race condition can occur.
-    // TODO 1: Slave checks if requested values are set to reset value DEFINE, if not it sets error and stops cycle.
-    // TODO 1: In order for master to know whether requested parameters got sent
+    // Slave sets them, master reads and resets them to a DEFINE value in order for master to know
+    // whether requested parameters got sent in next the cycle.
     char error_string[STRING_SIZE];  // Slave sets, Master resets
     char string_value[STRING_SIZE];
     int int_value;

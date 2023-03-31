@@ -108,21 +108,36 @@ static void *slave_processor_detached_thread(void *data) {
             }
 
             if (slave_shmseg->requested_parameters & STRING_PARAMETER_BIT) {
-                log_info("Received from slave process [%d] string parameter %s",
-                    slave_shmseg->pid,
-                    slave_shmseg->string_value);
-                memset(slave_shmseg->string_value, STRING_VALUE_UNDEFINED, STRING_SIZE);
+                if (slave_shmseg->string_value[0] == STRING_VALUE_UNDEFINED) {
+                    log_error("Did not receive requested string parameter from slave process [%d]!",
+                        slave_shmseg->pid);
+                } else {
+                    log_info("Received from slave process [%d] string parameter %s",
+                        slave_shmseg->pid,
+                        slave_shmseg->string_value);
+                    memset(slave_shmseg->string_value, STRING_VALUE_UNDEFINED, STRING_SIZE);
+                }
             }
             if (slave_shmseg->requested_parameters & INT_PARAMETER_BIT) {
-                log_info("Received from slave process [%d] int parameter %d",
-                    slave_shmseg->pid, slave_shmseg->int_value);
-                slave_shmseg->int_value = INT_VALUE_UNDEFINED;
+                if (slave_shmseg->int_value == INT_VALUE_UNDEFINED) {
+                    log_error("Did not receive requested int parameter from slave process [%d]!",
+                        slave_shmseg->pid);
+                } else {
+                    log_info("Received from slave process [%d] int parameter %d",
+                        slave_shmseg->pid, slave_shmseg->int_value);
+                    slave_shmseg->int_value = INT_VALUE_UNDEFINED;
+                }
             }
             if (slave_shmseg->requested_parameters & BOOL_PARAMETER_BIT) {
-                log_info("Received from slave process [%d] bool parameter %s",
-                    slave_shmseg->pid,
-                    slave_shmseg->bool_value ? "true" : "false");
-                slave_shmseg->bool_value = BOOL_VALUE_UNDEFINED;
+                if (slave_shmseg->bool_value == BOOL_VALUE_UNDEFINED) {
+                    log_error("Did not receive requested bool parameter from slave process [%d]!",
+                        slave_shmseg->pid);
+                } else {
+                    log_info("Received from slave process [%d] bool parameter %s",
+                        slave_shmseg->pid,
+                        slave_shmseg->bool_value ? "true" : "false");
+                    slave_shmseg->bool_value = BOOL_VALUE_UNDEFINED;
+                }
             }
 
             slave_shmseg->res_m_to_s = ACK;

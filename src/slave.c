@@ -232,12 +232,13 @@ static void *signal_handler_thread(void *ignore) {
     sigaddset(&sig_set, SIGUSR1);
 
     while (true) {
-        err = sigwaitinfo(&sig_set, &sig_info);
+        err = sigwaitinfo(&sig_set, &sig_info);  // Should queue signals of same value (SIGUSR1)
         if (err == -1) {
             fprintf(stderr, "sigwaitinfo() call failed!\n");
         } else {
             if (sig_info.si_pid != self.shmp->master_pid) {
                 fprintf(stderr, "Received signal from process %d. Only accepting signals from master process %d, continuing...\n", sig_info.si_pid, self.shmp->master_pid);
+                // TODO 0?: Send to master error message
                 continue;
             }
             
@@ -265,26 +266,30 @@ static void *signal_handler_thread(void *ignore) {
                     self.shmp->slave_shmseg[self.shmsegIdx].res_m_to_s = NO_RESPONSE;
                     continue;
                 case NACK:
-                    // Master processed, allow slave to process and send again
+                    // Master processed, allow slave to process and try again
                     if (sem_post(&self.allow_communication_cycle)) {
                         fprintf(stderr, "sem_post() call failed, continuing...\n");
                         continue;
                     }
-                    // Ignore
+                    self.shmp->slave_shmseg[self.shmsegIdx].req_s_to_m = NO_REQUEST;
+                    self.shmp->slave_shmseg[self.shmsegIdx].res_m_to_s = NO_RESPONSE;
                     continue;
                 case NO_RESPONSE:
                     // Did not receive a response from master! Continue checking if received request from master.
                     break;
                 default:
-                    // Master processed, allow slave to process and send again
+                    // Master processed, allow slave to process and try again
                     if (sem_post(&self.allow_communication_cycle)) {
                         fprintf(stderr, "sem_post() call failed, continuing...\n");
                         continue;
                     }
                     fprintf(stderr, "Unrecognized response received from master process %d\n", sig_info.si_pid);
+                    self.shmp->slave_shmseg[self.shmsegIdx].req_s_to_m = NO_REQUEST;
+                    self.shmp->slave_shmseg[self.shmsegIdx].res_m_to_s = NO_RESPONSE;
                     continue;
                 }
 
+                // Now check if signals mixed and we also have a request from master, not only response.
                 switch (self.shmp->slave_shmseg[self.shmsegIdx].req_m_to_s)
                 {
                 case CONNECT_SLAVE:
@@ -301,6 +306,9 @@ static void *signal_handler_thread(void *ignore) {
                     break;
                 case STOP_SLAVE_CYCLE:
                     handle_stop_cycle_slave_request();
+                    break;
+                case NO_REQUEST:
+                    fprintf(stderr, "Unexpected NO_REQUEST received from master process %d\n", sig_info.si_pid);
                     break;
                 default:
                     fprintf(stderr, "Unrecognized command received from master process %d\n", sig_info.si_pid);
