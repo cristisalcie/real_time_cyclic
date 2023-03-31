@@ -47,12 +47,13 @@ static int getAssignedShmsegIdx(pid_t pid) {
     return NO_IDX;
 }
 
-static int send_change_name_slave_request(int shmsegIdx) {
-    pid_t slave_pid = self.shmp->slave_shmseg[shmsegIdx].pid;
-
-    self.shmp->slave_shmseg[shmsegIdx].req_m_to_s = CHANGE_SLAVE_NAME;
-    if (kill(slave_pid, SIGUSR1)) {
-        log_error("Failed to send change name slave request to process %d!", slave_pid);
+static int block_signals() {
+    sigset_t block_mask;
+    sigemptyset(&block_mask);
+    sigaddset(&block_mask, SIGUSR1);
+    sigaddset(&block_mask, SIGUSR2);
+    if (sigprocmask(SIG_BLOCK, &block_mask, NULL) == -1) {
+        log_error("Can't block signals!");
         return RTC_ERROR;
     }
     return RTC_SUCCESS;
@@ -74,13 +75,6 @@ static bool slave_request_has_errors(shmseg_t *slave_shmseg) {
         return true;
     }
     return false;
-}
-
-static void handle_slave_request_errors(shmseg_t *slave_shmseg) {
-    log_error("Received from slave process [%d]: %s",
-        slave_shmseg->pid,
-        slave_shmseg->error_string);
-    memset(slave_shmseg->error_string, STRING_VALUE_UNDEFINED, STRING_SIZE);
 }
 
 static void *slave_processor_detached_thread(void *data) {
@@ -232,76 +226,121 @@ static int create_slave_processor_detached_thread(int shmsegIdx) {
     return RTC_SUCCESS;
 }
 
-static int send_connect_slave_request() {
-    pid_t slave_pid = self.control_shmp->affected_slave_pid;
-    
-    int shmsegIdx = getAssignedShmsegIdx(slave_pid);
-    if (shmsegIdx == NO_IDX) {
-        log_debug("Process %d has no assigned index (expected), assigning...", slave_pid);
-        shmsegIdx = assignShmsegIdx(slave_pid);
-        if (shmsegIdx == NO_IDX) {
-            log_error("Failed to create shared memory index for process %d!", slave_pid);
+
+static int destroy_signal_semaphores() {
+    for (int i = 0; i < MAX_SLAVES; ++i) {
+        if (sem_destroy(&(self.sig_semaphore[i]))) {
+            log_error("sem_destroy() call failed!");
             return RTC_ERROR;
         }
-        // Set at shared memory index, pid of process owner
-        self.shmp->slave_shmseg[shmsegIdx].pid = slave_pid;
-    } else {
-        log_error("Slave process %d already connected!", slave_pid);
-        return RTC_ERROR;
-    }
-    
-    self.shmp->slave_shmseg[shmsegIdx].req_m_to_s = CONNECT_SLAVE;
-
-    if (kill(slave_pid, SIGUSR1)) {
-        log_error("Failed to send connect slave request to process %d!", slave_pid);
-        if (shmsegIdx != NO_IDX)
-            self.shmp->slave_shmseg[shmsegIdx].pid = NO_PID;
-
-        return RTC_ERROR;
-    }
-    return RTC_SUCCESS;
-}
-
-static int send_start_cycle_slave_request() {
-    pid_t slave_pid = self.control_shmp->affected_slave_pid;
-
-    int shmsegIdx = getAssignedShmsegIdx(slave_pid);
-    if (shmsegIdx == NO_IDX) {
-        log_debug("Process %d has no assigned index!", slave_pid);
-        return RTC_ERROR;
     }
 
-    self.shmp->slave_shmseg[shmsegIdx].req_m_to_s = START_SLAVE_CYCLE;
+    return RTC_SUCCESS;
+}
 
-    if (kill(slave_pid, SIGUSR1)) {
-        log_error("Failed to send start cycle slave request to process %d!", slave_pid);
+static int final() {
+    int ret = RTC_SUCCESS;
+
+    ret = destroy_signal_semaphores();
+
+    // Deattach from shared memory
+    if (shmdt(self.shmp)) {
+        log_error("shmdt() call failed!");
+        ret = RTC_ERROR;
+    }
+    self.shmp = NULL;
+
+    log_info("Stopped master!");
+    closelog();
+    return ret;
+}
+
+static int init_signal_semaphores() {
+    for (int i = 0; i < MAX_SLAVES; ++i) {
+        if (sem_init(&(self.sig_semaphore[i]), 0, 0)) {
+            log_error("sem_init() call failed!");
+            return RTC_ERROR;
+        }
+    }
+
+    return RTC_SUCCESS;
+}
+
+static int init_control_shared_memory() {
+    int shmid;
+
+    // Get existing shared memory
+    shmid = shmget(CONTROL_SHARED_MEMORY_KEY, sizeof(control_shm_t), 0666);
+    if (shmid == -1) {
+        log_error("shmget() call failed to create shared memory!\n");
         return RTC_ERROR;
     }
+    // Attach to shared memory
+    self.control_shmp = shmat(shmid, NULL, 0);
+    if (self.control_shmp == (void*) -1) {
+        log_error("shmmat() call failed to attach to shared memory!\n");
+        return RTC_ERROR;
+    }
+
     return RTC_SUCCESS;
 }
 
-static int handle_configurator_stop_master_request() {
-    // TODO
+static int init_shared_memory() {
+    int shmid;
+
+    // Get or create if not existing shared memory
+    log_debug("Shared memory key = %d", SHARED_MEMORY_KEY);
+
+    shmid = shmget(SHARED_MEMORY_KEY, sizeof(shm_t), 0666 | IPC_CREAT);
+    if (shmid == -1) {
+        log_error("shmget() call failed to create shared memory!");
+        return RTC_ERROR;
+    }
+    // Attach to shared memory
+    self.shmp = shmat(shmid, NULL, 0);
+    if (self.shmp == (void*) -1) {
+        log_error("shmmat() call failed to attach to shared memory!");
+        return RTC_ERROR;
+    }
+
+    memset(self.shmp, 0, sizeof(shm_t));
+
+    self.shmp->master_pid = getpid();
+    log_debug("Set self.shmp->master_pid to %d", self.shmp->master_pid);
+
+    for (int i = 0; i < MAX_SLAVES; ++i) {
+        self.shmp->slave_shmseg[i].pid = NO_PID;
+        self.shmp->slave_shmseg[i].communication_cycle_us = DEFAULT_COMMUNICATION_CYCLE_MS * 1000;
+        self.shmp->slave_shmseg[i].req_m_to_s = NO_REQUEST;
+        self.shmp->slave_shmseg[i].req_s_to_m = NO_REQUEST;
+        self.shmp->slave_shmseg[i].res_m_to_s = NO_RESPONSE;
+        self.shmp->slave_shmseg[i].res_s_to_m = NO_RESPONSE;
+        memset(self.shmp->slave_shmseg[i].error_string, STRING_VALUE_UNDEFINED, STRING_SIZE);
+        memset(self.shmp->slave_shmseg[i].string_value, STRING_VALUE_UNDEFINED, STRING_SIZE);
+        self.shmp->slave_shmseg[i].int_value = INT_VALUE_UNDEFINED;
+        self.shmp->slave_shmseg[i].bool_value = BOOL_VALUE_UNDEFINED;
+    }
+
     return RTC_SUCCESS;
 }
-static int handle_configurator_delete_slave_request() {
-    // TODO
+
+static int init() {
+    int ret;
+
+    // openlog("master", LOG_PID | LOG_PERROR, LOG_USER);
+    openlog("master", LOG_PID, LOG_USER);
+    // setlogmask(LOG_UPTO(LOG_DEBUG));  // includes all logs 0,1,2 up to 7(DEBUG)
+    setlogmask(LOG_MASK(LOG_ERR) | LOG_MASK(LOG_INFO));
+    log_info("Started master!");
+
+    if ((ret = block_signals()) != RTC_SUCCESS) return ret;
+    if ((ret = init_shared_memory()) != RTC_SUCCESS) return ret;
+    if ((ret = init_control_shared_memory()) != RTC_SUCCESS) return ret;
+    if ((ret = init_signal_semaphores()) != RTC_SUCCESS) return ret;
+
     return RTC_SUCCESS;
 }
-static int handle_configurator_connect_slave_request() {
-    return send_connect_slave_request();
-}
-static int handle_configurator_disconnect_slave_request() {
-    // TODO
-    return RTC_SUCCESS;
-}
-static int handle_start_cycle_slave_request() {
-    return send_start_cycle_slave_request();;
-}
-static int handle_stop_cycle_slave_request() {
-    // TODO
-    return RTC_SUCCESS;
-}
+
 
 static void *signal_handler_thread(void *ignore) {
     int err;
@@ -412,130 +451,98 @@ static void *signal_handler_thread(void *ignore) {
 }
 
 
+int send_change_name_slave_request(int shmsegIdx) {
+    pid_t slave_pid = self.shmp->slave_shmseg[shmsegIdx].pid;
 
-static int destroy_signal_semaphores() {
-    for (int i = 0; i < MAX_SLAVES; ++i) {
-        if (sem_destroy(&(self.sig_semaphore[i]))) {
-            log_error("sem_destroy() call failed!");
+    self.shmp->slave_shmseg[shmsegIdx].req_m_to_s = CHANGE_SLAVE_NAME;
+    if (kill(slave_pid, SIGUSR1)) {
+        log_error("Failed to send change name slave request to process %d!", slave_pid);
+        return RTC_ERROR;
+    }
+    return RTC_SUCCESS;
+}
+
+int send_connect_slave_request() {
+    pid_t slave_pid = self.control_shmp->affected_slave_pid;
+    
+    int shmsegIdx = getAssignedShmsegIdx(slave_pid);
+    if (shmsegIdx == NO_IDX) {
+        log_debug("Process %d has no assigned index (expected), assigning...", slave_pid);
+        shmsegIdx = assignShmsegIdx(slave_pid);
+        if (shmsegIdx == NO_IDX) {
+            log_error("Failed to create shared memory index for process %d!", slave_pid);
             return RTC_ERROR;
         }
+        // Set at shared memory index, pid of process owner
+        self.shmp->slave_shmseg[shmsegIdx].pid = slave_pid;
+    } else {
+        log_error("Slave process %d already connected!", slave_pid);
+        return RTC_ERROR;
     }
+    
+    self.shmp->slave_shmseg[shmsegIdx].req_m_to_s = CONNECT_SLAVE;
 
-    return RTC_SUCCESS;
-}
+    if (kill(slave_pid, SIGUSR1)) {
+        log_error("Failed to send connect slave request to process %d!", slave_pid);
+        if (shmsegIdx != NO_IDX)
+            self.shmp->slave_shmseg[shmsegIdx].pid = NO_PID;
 
-static int final() {
-    int ret = RTC_SUCCESS;
-
-    ret = destroy_signal_semaphores();
-
-    // Deattach from shared memory
-    if (shmdt(self.shmp)) {
-        log_error("shmdt() call failed!");
-        ret = RTC_ERROR;
-    }
-    self.shmp = NULL;
-
-    log_info("Stopped master!");
-    closelog();
-    return ret;
-}
-
-static int block_signals() {
-    sigset_t block_mask;
-    sigemptyset(&block_mask);
-    sigaddset(&block_mask, SIGUSR1);
-    sigaddset(&block_mask, SIGUSR2);
-    if (sigprocmask(SIG_BLOCK, &block_mask, NULL) == -1) {
-        log_error("Can't block signals!");
         return RTC_ERROR;
     }
     return RTC_SUCCESS;
 }
 
-static int init_signal_semaphores() {
-    for (int i = 0; i < MAX_SLAVES; ++i) {
-        if (sem_init(&(self.sig_semaphore[i]), 0, 0)) {
-            log_error("sem_init() call failed!");
-            return RTC_ERROR;
-        }
+int send_start_cycle_slave_request() {
+    pid_t slave_pid = self.control_shmp->affected_slave_pid;
+
+    int shmsegIdx = getAssignedShmsegIdx(slave_pid);
+    if (shmsegIdx == NO_IDX) {
+        log_debug("Process %d has no assigned index!", slave_pid);
+        return RTC_ERROR;
     }
 
+    self.shmp->slave_shmseg[shmsegIdx].req_m_to_s = START_SLAVE_CYCLE;
+
+    if (kill(slave_pid, SIGUSR1)) {
+        log_error("Failed to send start cycle slave request to process %d!", slave_pid);
+        return RTC_ERROR;
+    }
     return RTC_SUCCESS;
 }
 
-static int init_control_shared_memory() {
-    int shmid;
 
-    // Get existing shared memory
-    shmid = shmget(CONTROL_SHARED_MEMORY_KEY, sizeof(control_shm_t), 0666);
-    if (shmid == -1) {
-        log_error("shmget() call failed to create shared memory!\n");
-        return RTC_ERROR;
-    }
-    // Attach to shared memory
-    self.control_shmp = shmat(shmid, NULL, 0);
-    if (self.control_shmp == (void*) -1) {
-        log_error("shmmat() call failed to attach to shared memory!\n");
-        return RTC_ERROR;
-    }
+void handle_slave_request_errors(shmseg_t *slave_shmseg) {
+    log_error("Received from slave process [%d]: %s",
+        slave_shmseg->pid,
+        slave_shmseg->error_string);
+    memset(slave_shmseg->error_string, STRING_VALUE_UNDEFINED, STRING_SIZE);
+}
 
+int handle_configurator_stop_master_request() {
+    // TODO
     return RTC_SUCCESS;
 }
 
-static int init_shared_memory() {
-    int shmid;
-
-    // Get or create if not existing shared memory
-    log_debug("Shared memory key = %d", SHARED_MEMORY_KEY);
-
-    shmid = shmget(SHARED_MEMORY_KEY, sizeof(shm_t), 0666 | IPC_CREAT);
-    if (shmid == -1) {
-        log_error("shmget() call failed to create shared memory!");
-        return RTC_ERROR;
-    }
-    // Attach to shared memory
-    self.shmp = shmat(shmid, NULL, 0);
-    if (self.shmp == (void*) -1) {
-        log_error("shmmat() call failed to attach to shared memory!");
-        return RTC_ERROR;
-    }
-
-    memset(self.shmp, 0, sizeof(shm_t));
-
-    self.shmp->master_pid = getpid();
-    log_debug("Set self.shmp->master_pid to %d", self.shmp->master_pid);
-
-    for (int i = 0; i < MAX_SLAVES; ++i) {
-        self.shmp->slave_shmseg[i].pid = NO_PID;
-        self.shmp->slave_shmseg[i].communication_cycle_us = DEFAULT_COMMUNICATION_CYCLE_MS * 1000;
-        self.shmp->slave_shmseg[i].req_m_to_s = NO_REQUEST;
-        self.shmp->slave_shmseg[i].req_s_to_m = NO_REQUEST;
-        self.shmp->slave_shmseg[i].res_m_to_s = NO_RESPONSE;
-        self.shmp->slave_shmseg[i].res_s_to_m = NO_RESPONSE;
-        memset(self.shmp->slave_shmseg[i].error_string, STRING_VALUE_UNDEFINED, STRING_SIZE);
-        memset(self.shmp->slave_shmseg[i].string_value, STRING_VALUE_UNDEFINED, STRING_SIZE);
-        self.shmp->slave_shmseg[i].int_value = INT_VALUE_UNDEFINED;
-        self.shmp->slave_shmseg[i].bool_value = BOOL_VALUE_UNDEFINED;
-    }
-
+int handle_configurator_delete_slave_request() {
+    // TODO
     return RTC_SUCCESS;
 }
 
-static int init() {
-    int ret;
+int handle_configurator_connect_slave_request() {
+    return send_connect_slave_request();
+}
 
-    // openlog("master", LOG_PID | LOG_PERROR, LOG_USER);
-    openlog("master", LOG_PID, LOG_USER);
-    // setlogmask(LOG_UPTO(LOG_DEBUG));  // includes all logs 0,1,2 up to 7(DEBUG)
-    setlogmask(LOG_MASK(LOG_ERR) | LOG_MASK(LOG_INFO));
-    log_info("Started master!");
+int handle_configurator_disconnect_slave_request() {
+    // TODO
+    return RTC_SUCCESS;
+}
 
-    if ((ret = block_signals()) != RTC_SUCCESS) return ret;
-    if ((ret = init_shared_memory()) != RTC_SUCCESS) return ret;
-    if ((ret = init_control_shared_memory()) != RTC_SUCCESS) return ret;
-    if ((ret = init_signal_semaphores()) != RTC_SUCCESS) return ret;
+int handle_start_cycle_slave_request() {
+    return send_start_cycle_slave_request();;
+}
 
+int handle_stop_cycle_slave_request() {
+    // TODO
     return RTC_SUCCESS;
 }
 

@@ -14,4 +14,11 @@ typedef struct configurator_context_s {
     pid_t master_pid;
 } configurator_context_t;
 
+int send_start_cycle_slave_request();
+int send_connect_slave_request();
+
+void wait_start_slave_cycle_response();
+void wait_connect_slave_response();
+int wait_master_started_signal();
+
 #endif /* CONFIGURATOR_H */

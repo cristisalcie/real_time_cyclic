@@ -133,96 +133,90 @@ static int create_communication_cycle_detached_thread() {
     return RTC_SUCCESS;
 }
 
-static void handle_connect_slave_request() {
-    shmseg_t *shmseg = &self.shmp->slave_shmseg[self.shmsegIdx];
-
-    // Fill shared memory structure
-    strcpy(shmseg->name, self.name);
-    shmseg->available_parameters = self.available_parameters;
-
-    // Send ACK response back to master
-    shmseg->res_s_to_m = ACK;
-    if (kill(self.shmp->master_pid, SIGUSR1)) {
-        fprintf(stderr, "Failed to send response back to master!\n");
-        return;
+static int destroy_allow_communication_cycle_semaphore() {
+    if (sem_destroy(&self.allow_communication_cycle)) {
+        fprintf(stderr, "sem_destroy() call failed!\n");
+        return RTC_ERROR;
     }
-}
 
-static int handle_disconnect_slave_request() {
-    // TODO
     return RTC_SUCCESS;
 }
 
-static void handle_change_name_slave_request() {
-    unsigned int prev_change_name_idx = self.change_name_idx;
+static int final() {
+    int ret = RTC_SUCCESS;
 
-    if (self.change_name_idx) {
-        // Erase previously added number from string name
-        for (int i = SLAVE_NAME_SIZE - 1; i > 0; --i) {
-            if (self.name[i] == '_') {
-                self.name[i] = '\0';
-                self.shmp->slave_shmseg[self.shmsegIdx].name[i] = '\0';
-                break;
-            }
-            self.name[i] = '\0';
-            self.shmp->slave_shmseg[self.shmsegIdx].name[i] = '\0';
-        }
+    ret = destroy_allow_communication_cycle_semaphore();
+
+    // Deattach from shared memory
+    if (shmdt(self.shmp)) {
+        fprintf(stderr, "shmdt() call failed!\n");
+        ret = RTC_ERROR;
     }
-    ++prev_change_name_idx;
-    if (prev_change_name_idx < self.change_name_idx) {
-        // Index overflow send NACK
-        // TODO 0: Set error message for master to log
-        self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = NACK;
-        if (kill(self.shmp->master_pid, SIGUSR1)) {
-            fprintf(stderr, "Failed to send response back to master!\n");
-        }
-        return;
-    }
-    ++self.change_name_idx;
+    self.shmp = NULL;
 
-    sprintf(self.name, "%s_%u", self.shmp->slave_shmseg[self.shmsegIdx].name, self.change_name_idx);
-    strcpy(self.shmp->slave_shmseg[self.shmsegIdx].name, self.name);
-
-    printf("Changed slave name to %s\n", self.name);
-
-    self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = ACK;
-    if (kill(self.shmp->master_pid, SIGUSR1)) {
-        fprintf(stderr, "Failed to send response back to master!\n");
-    }
+    return ret;
 }
 
-static void handle_start_cycle_slave_request() {
-    if (self.cycle_started) {
-        // TODO 0: Set error log msg variable for master
-        self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = NACK;
-        if (kill(self.shmp->master_pid, SIGUSR1)) {
-            fprintf(stderr, "Failed to send response back to master!\n");
-        }
-        return;
+static int init_allow_communication_cycle_semaphore() {
+    if (sem_init(&self.allow_communication_cycle, 0, 0)) {
+        fprintf(stderr, "sem_init() call failed!\n");
+        return RTC_ERROR;
     }
 
-    if (sem_post(&self.allow_communication_cycle)) {
-        fprintf(stderr, "sem_post() call failed!\n");
-
-        // TODO 0: Set error log msg variable for master
-        self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = NACK;
-        if (kill(self.shmp->master_pid, SIGUSR1)) {
-            fprintf(stderr, "Failed to send response back to master!\n");
-        }
-        return;
-    }
-
-    self.cycle_started = true;
-
-    self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = ACK;
-    if (kill(self.shmp->master_pid, SIGUSR1)) {
-        fprintf(stderr, "Failed to send response back to master!\n");
-    }
+    return RTC_SUCCESS;
 }
 
-static void handle_stop_cycle_slave_request() {
-    // TODO 1
+static int init_shared_memory() {
+    int shmid;
+
+    // Get or create if not existing shared memory
+    shmid = shmget(SHARED_MEMORY_KEY, sizeof(shm_t), 0666);
+    if (shmid == -1) {
+        fprintf(stderr, "shmget() call failed to get shared memory id!\n");
+        perror("shmget() failed!");
+        return RTC_ERROR;
+    }
+
+    // Attach to shared memory
+    self.shmp = shmat(shmid, NULL, 0);
+    if (self.shmp == (void*) -1) {
+        fprintf(stderr, "shmmat() call failed to attach to shared memory!\n");
+        return RTC_ERROR;
+    }
+
+    self.shmsegIdx = NO_IDX;
+
+    return RTC_SUCCESS;
 }
+
+static int init(int argc, char *argv[]) {
+    if (argc != 3) {
+        fprintf(stderr, "Syntax: %s <slave_name> <available_parameters>\n", argv[0]);
+        return RTC_ERROR;
+    }
+
+    int ret;
+
+    memset(&self, 0, sizeof(slave_context_t));
+
+    strcpy(self.name, argv[1]);
+    if (argv[2][0] == '1')
+        self.available_parameters |= STRING_PARAMETER_BIT;
+    if (argv[2][1] == '1')
+        self.available_parameters |= INT_PARAMETER_BIT;
+    if (argv[2][2] == '1')
+        self.available_parameters |= BOOL_PARAMETER_BIT;
+
+    if ((ret = block_signals()) != RTC_SUCCESS) return ret;
+    if ((ret = init_shared_memory()) != RTC_SUCCESS) return ret;
+    if ((ret = init_allow_communication_cycle_semaphore()) != RTC_SUCCESS) return ret;
+    if ((ret = create_communication_cycle_detached_thread()) != RTC_SUCCESS) return ret;
+
+    srand(time(NULL));
+
+    return RTC_SUCCESS;
+}
+
 
 static void *signal_handler_thread(void *ignore) {
     int err;
@@ -321,89 +315,98 @@ static void *signal_handler_thread(void *ignore) {
     return NULL;
 }
 
-static int destroy_allow_communication_cycle_semaphore() {
-    if (sem_destroy(&self.allow_communication_cycle)) {
-        fprintf(stderr, "sem_destroy() call failed!\n");
-        return RTC_ERROR;
-    }
 
+void handle_connect_slave_request() {
+    shmseg_t *shmseg = &self.shmp->slave_shmseg[self.shmsegIdx];
+
+    // Fill shared memory structure
+    strcpy(shmseg->name, self.name);
+    shmseg->available_parameters = self.available_parameters;
+
+    // Send ACK response back to master
+    shmseg->res_s_to_m = ACK;
+    if (kill(self.shmp->master_pid, SIGUSR1)) {
+        fprintf(stderr, "Failed to send response back to master!\n");
+        return;
+    }
+}
+
+int handle_disconnect_slave_request() {
+    // TODO
     return RTC_SUCCESS;
 }
 
-static int final() {
-    int ret = RTC_SUCCESS;
+void handle_change_name_slave_request() {
+    unsigned int prev_change_name_idx = self.change_name_idx;
 
-    ret = destroy_allow_communication_cycle_semaphore();
-
-    // Deattach from shared memory
-    if (shmdt(self.shmp)) {
-        fprintf(stderr, "shmdt() call failed!\n");
-        ret = RTC_ERROR;
+    if (self.change_name_idx) {
+        // Erase previously added number from string name
+        for (int i = SLAVE_NAME_SIZE - 1; i > 0; --i) {
+            if (self.name[i] == '_') {
+                self.name[i] = '\0';
+                self.shmp->slave_shmseg[self.shmsegIdx].name[i] = '\0';
+                break;
+            }
+            self.name[i] = '\0';
+            self.shmp->slave_shmseg[self.shmsegIdx].name[i] = '\0';
+        }
     }
-    self.shmp = NULL;
+    ++prev_change_name_idx;
+    if (prev_change_name_idx < self.change_name_idx) {
+        // Index overflow send NACK
+        // TODO 0: Set error message for master to log
+        self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = NACK;
+        if (kill(self.shmp->master_pid, SIGUSR1)) {
+            fprintf(stderr, "Failed to send response back to master!\n");
+        }
+        return;
+    }
+    ++self.change_name_idx;
 
-    return ret;
+    sprintf(self.name, "%s_%u", self.shmp->slave_shmseg[self.shmsegIdx].name, self.change_name_idx);
+    strcpy(self.shmp->slave_shmseg[self.shmsegIdx].name, self.name);
+
+    printf("Changed slave name to %s\n", self.name);
+
+    self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = ACK;
+    if (kill(self.shmp->master_pid, SIGUSR1)) {
+        fprintf(stderr, "Failed to send response back to master!\n");
+    }
 }
 
-static int init_allow_communication_cycle_semaphore() {
-    if (sem_init(&self.allow_communication_cycle, 0, 0)) {
-        fprintf(stderr, "sem_init() call failed!\n");
-        return RTC_ERROR;
+void handle_start_cycle_slave_request() {
+    if (self.cycle_started) {
+        // TODO 0: Set error log msg variable for master
+        self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = NACK;
+        if (kill(self.shmp->master_pid, SIGUSR1)) {
+            fprintf(stderr, "Failed to send response back to master!\n");
+        }
+        return;
     }
 
-    return RTC_SUCCESS;
+    if (sem_post(&self.allow_communication_cycle)) {
+        fprintf(stderr, "sem_post() call failed!\n");
+
+        // TODO 0: Set error log msg variable for master
+        self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = NACK;
+        if (kill(self.shmp->master_pid, SIGUSR1)) {
+            fprintf(stderr, "Failed to send response back to master!\n");
+        }
+        return;
+    }
+
+    self.cycle_started = true;
+
+    self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = ACK;
+    if (kill(self.shmp->master_pid, SIGUSR1)) {
+        fprintf(stderr, "Failed to send response back to master!\n");
+    }
 }
 
-static int init_shared_memory() {
-    int shmid;
-
-    // Get or create if not existing shared memory
-    shmid = shmget(SHARED_MEMORY_KEY, sizeof(shm_t), 0666);
-    if (shmid == -1) {
-        fprintf(stderr, "shmget() call failed to get shared memory id!\n");
-        perror("shmget() failed!");
-        return RTC_ERROR;
-    }
-
-    // Attach to shared memory
-    self.shmp = shmat(shmid, NULL, 0);
-    if (self.shmp == (void*) -1) {
-        fprintf(stderr, "shmmat() call failed to attach to shared memory!\n");
-        return RTC_ERROR;
-    }
-
-    self.shmsegIdx = NO_IDX;
-
-    return RTC_SUCCESS;
+void handle_stop_cycle_slave_request() {
+    // TODO 1
 }
 
-static int init(int argc, char *argv[]) {
-    if (argc != 3) {
-        fprintf(stderr, "Syntax: %s <slave_name> <available_parameters>\n", argv[0]);
-        return RTC_ERROR;
-    }
-
-    int ret;
-
-    memset(&self, 0, sizeof(slave_context_t));
-
-    strcpy(self.name, argv[1]);
-    if (argv[2][0] == '1')
-        self.available_parameters |= STRING_PARAMETER_BIT;
-    if (argv[2][1] == '1')
-        self.available_parameters |= INT_PARAMETER_BIT;
-    if (argv[2][2] == '1')
-        self.available_parameters |= BOOL_PARAMETER_BIT;
-
-    if ((ret = block_signals()) != RTC_SUCCESS) return ret;
-    if ((ret = init_shared_memory()) != RTC_SUCCESS) return ret;
-    if ((ret = init_allow_communication_cycle_semaphore()) != RTC_SUCCESS) return ret;
-    if ((ret = create_communication_cycle_detached_thread()) != RTC_SUCCESS) return ret;
-
-    srand(time(NULL));
-
-    return RTC_SUCCESS;
-}
 
 int main(int argc, char *argv[]) {
     int ret;

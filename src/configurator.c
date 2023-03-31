@@ -41,47 +41,22 @@ static int getAssignedShmsegIdx(pid_t pid) {
     return NO_IDX;
 }
 
-static int init_control_shared_memory() {
-    int shmid;
+static void print_slave_data_by_pid(pid_t pid) {
+    int shmsegIdx = getAssignedShmsegIdx(pid);
+    if (shmsegIdx == NO_IDX) return;
 
-    // Get or create if not existing shared memory
-    shmid = shmget(CONTROL_SHARED_MEMORY_KEY, sizeof(control_shm_t), 0666 | IPC_CREAT);
-    if (shmid == -1) {
-        fprintf(stderr, "shmget() call failed to create shared memory!\n");
-        return RTC_ERROR;
+    printf("pid: %d\n", pid);
+    printf("name: %s\n", self.shmp->slave_shmseg[shmsegIdx].name);
+    printf("available parameters: ");
+    if (self.shmp->slave_shmseg[shmsegIdx].available_parameters & STRING_PARAMETER_BIT) {
+        printf("string paramater, ");
     }
-    // Attach to shared memory
-    self.control_shmp = shmat(shmid, NULL, 0);
-    if (self.control_shmp == (void*) -1) {
-        fprintf(stderr, "shmmat() call failed to attach to shared memory!\n");
-        return RTC_ERROR;
+    if (self.shmp->slave_shmseg[shmsegIdx].available_parameters & INT_PARAMETER_BIT) {
+        printf("int paramater, ");
     }
-
-    memset(self.control_shmp, 0, sizeof(control_shm_t));
-
-    self.control_shmp->configurator_pid = getpid();
-    fprintf(stderr, "Set self.control_shmp->configurator_pid to %d\n", self.control_shmp->configurator_pid);
-
-    return RTC_SUCCESS;
-}
-
-static int init_shared_memory() {
-    int shmid;
-
-    // Get or create if not existing shared memory
-    shmid = shmget(SHARED_MEMORY_KEY, sizeof(shm_t), 0666);
-    if (shmid == -1) {
-        fprintf(stderr, "shmget() call failed to create shared memory!\n");
-        return RTC_ERROR;
+    if (self.shmp->slave_shmseg[shmsegIdx].available_parameters & BOOL_PARAMETER_BIT) {
+        printf("bool paramater\n");
     }
-    // Attach to shared memory
-    self.shmp = shmat(shmid, NULL, 0);
-    if (self.shmp == (void*) -1) {
-        fprintf(stderr, "shmmat() call failed to attach to shared memory!\n");
-        return RTC_ERROR;
-    }
-
-    return RTC_SUCCESS;
 }
 
 static void print_main_menu() {
@@ -136,7 +111,70 @@ static void read_req_code() {
     printf("\n");
 }
 
-static int send_start_cycle_slave_signal() {
+static int init_control_shared_memory() {
+    int shmid;
+
+    // Get or create if not existing shared memory
+    shmid = shmget(CONTROL_SHARED_MEMORY_KEY, sizeof(control_shm_t), 0666 | IPC_CREAT);
+    if (shmid == -1) {
+        fprintf(stderr, "shmget() call failed to create shared memory!\n");
+        return RTC_ERROR;
+    }
+    // Attach to shared memory
+    self.control_shmp = shmat(shmid, NULL, 0);
+    if (self.control_shmp == (void*) -1) {
+        fprintf(stderr, "shmmat() call failed to attach to shared memory!\n");
+        return RTC_ERROR;
+    }
+
+    memset(self.control_shmp, 0, sizeof(control_shm_t));
+
+    self.control_shmp->configurator_pid = getpid();
+    fprintf(stderr, "Set self.control_shmp->configurator_pid to %d\n", self.control_shmp->configurator_pid);
+
+    return RTC_SUCCESS;
+}
+
+static int init_shared_memory() {
+    int shmid;
+
+    // Get or create if not existing shared memory
+    shmid = shmget(SHARED_MEMORY_KEY, sizeof(shm_t), 0666);
+    if (shmid == -1) {
+        fprintf(stderr, "shmget() call failed to create shared memory!\n");
+        return RTC_ERROR;
+    }
+    // Attach to shared memory
+    self.shmp = shmat(shmid, NULL, 0);
+    if (self.shmp == (void*) -1) {
+        fprintf(stderr, "shmmat() call failed to attach to shared memory!\n");
+        return RTC_ERROR;
+    }
+
+    return RTC_SUCCESS;
+}
+
+static int final() {
+    int ret = RTC_SUCCESS;
+
+    // Deattach from control shared memory
+    if (shmdt(self.control_shmp)) {
+        fprintf(stderr, "shmdt() call failed!\n");
+        ret = RTC_ERROR;
+    }
+    self.control_shmp = NULL;
+
+    // Deattach from shared memory
+    if (shmdt(self.shmp)) {
+        fprintf(stderr, "shmdt() call failed!\n");
+        ret = RTC_ERROR;
+    }
+    self.shmp = NULL;
+
+    return ret;
+}
+
+int send_start_cycle_slave_request() {
     self.control_shmp->request = START_SLAVE_CYCLE;
     if (kill(self.master_pid, SIGUSR2)) {
         fprintf(stderr, "Failed to send signal SIGUSR2 to master process %d\n", self.master_pid);
@@ -145,7 +183,7 @@ static int send_start_cycle_slave_signal() {
     return RTC_SUCCESS;
 }
 
-static int send_connect_slave_signal() {
+int send_connect_slave_request() {
     if (kill(self.master_pid, SIGUSR2)) {
         fprintf(stderr, "Failed to send signal SIGUSR2 to master process %d\n", self.master_pid);
         return RTC_ERROR;
@@ -153,25 +191,37 @@ static int send_connect_slave_signal() {
     return RTC_SUCCESS;
 }
 
-static void print_slave_data_by_pid(pid_t pid) {
-    int shmsegIdx = getAssignedShmsegIdx(pid);
-    if (shmsegIdx == NO_IDX) return;
+void wait_start_slave_cycle_response() {
+    int err;
+    sigset_t sig_set;
+    siginfo_t sig_info;
+    struct timespec timeout = { .tv_sec = WAIT_TIMEOUT_SECONDS };
 
-    printf("pid: %d\n", pid);
-    printf("name: %s\n", self.shmp->slave_shmseg[shmsegIdx].name);
-    printf("available parameters: ");
-    if (self.shmp->slave_shmseg[shmsegIdx].available_parameters & STRING_PARAMETER_BIT) {
-        printf("string paramater, ");
-    }
-    if (self.shmp->slave_shmseg[shmsegIdx].available_parameters & INT_PARAMETER_BIT) {
-        printf("int paramater, ");
-    }
-    if (self.shmp->slave_shmseg[shmsegIdx].available_parameters & BOOL_PARAMETER_BIT) {
-        printf("bool paramater\n");
+    sigemptyset(&sig_set);
+    sigaddset(&sig_set, SIGUSR2);
+
+    err = sigtimedwait(&sig_set, &sig_info, &timeout);
+    if (err == -1) {
+        perror("sigtimedwait() call failed in wait_start_slave_cycle_response()!");
+    } else {
+        switch (self.control_shmp->response)
+        {
+        case NACK:
+            printf("Start slave cycle slave request failed! (Maybe already started?)\n");
+            break;
+        case ACK:
+            printf("Start slave cycle slave request succeded!\n");
+            break;
+        default:
+            fprintf(stderr, "Unrecognized response received!");
+            break;
+        }
+        self.control_shmp->request = NO_REQUEST;
+        self.control_shmp->response = NO_RESPONSE;
     }
 }
 
-static void wait_connect_slave_response(pid_t pid) {
+void wait_connect_slave_response(pid_t pid) {
     int err;
     sigset_t sig_set;
     siginfo_t sig_info;
@@ -202,7 +252,7 @@ static void wait_connect_slave_response(pid_t pid) {
     }
 }
 
-static int wait_master_started_signal() {
+int wait_master_started_signal() {
     int err;
     int ret;
     sigset_t sig_set;
@@ -220,56 +270,6 @@ static int wait_master_started_signal() {
         if ((ret = init_shared_memory()) != RTC_SUCCESS) return ret;
     }
     return RTC_SUCCESS;
-}
-
-static void wait_start_slave_cycle_response() {
-    int err;
-    sigset_t sig_set;
-    siginfo_t sig_info;
-    struct timespec timeout = { .tv_sec = WAIT_TIMEOUT_SECONDS };
-
-    sigemptyset(&sig_set);
-    sigaddset(&sig_set, SIGUSR2);
-
-    err = sigtimedwait(&sig_set, &sig_info, &timeout);
-    if (err == -1) {
-        perror("sigtimedwait() call failed in wait_start_slave_cycle_response()!");
-    } else {
-        switch (self.control_shmp->response)
-        {
-        case NACK:
-            printf("Start slave cycle slave request failed! (Maybe already started?)\n");
-            break;
-        case ACK:
-            printf("Start slave cycle slave request succeded!\n");
-            break;
-        default:
-            fprintf(stderr, "Unrecognized response received!");
-            break;
-        }
-        self.control_shmp->request = NO_REQUEST;
-        self.control_shmp->response = NO_RESPONSE;
-    }
-}
-
-static int final() {
-    int ret = RTC_SUCCESS;
-
-    // Deattach from control shared memory
-    if (shmdt(self.control_shmp)) {
-        fprintf(stderr, "shmdt() call failed!\n");
-        ret = RTC_ERROR;
-    }
-    self.control_shmp = NULL;
-
-    // Deattach from shared memory
-    if (shmdt(self.shmp)) {
-        fprintf(stderr, "shmdt() call failed!\n");
-        ret = RTC_ERROR;
-    }
-    self.shmp = NULL;
-
-    return ret;
 }
 
 int main(int argc, char *argv[]) {
@@ -409,8 +409,8 @@ int main(int argc, char *argv[]) {
 
             self.control_shmp->affected_slave_pid = slave_pid;
             
-            if (send_connect_slave_signal()) {
-                // Failed to send connect signal
+            if (send_connect_slave_request()) {
+                // Failed to send connect request
                 break;
             }
 
@@ -573,7 +573,7 @@ int main(int argc, char *argv[]) {
             }
             printf("\n");
 
-            if (send_start_cycle_slave_signal() == RTC_SUCCESS) {
+            if (send_start_cycle_slave_request() == RTC_SUCCESS) {
                 wait_start_slave_cycle_response();
             }
             break;

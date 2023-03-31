@@ -36,4 +36,16 @@ typedef struct master_context_s {
     sem_t sig_semaphore[MAX_SLAVES];
 } master_context_t;
 
+int send_change_name_slave_request(int shmsegIdx);
+int send_connect_slave_request();
+int send_start_cycle_slave_request();
+
+void handle_slave_request_errors(shmseg_t *slave_shmseg);
+int handle_configurator_stop_master_request();
+int handle_configurator_delete_slave_request();
+int handle_configurator_connect_slave_request();
+int handle_configurator_disconnect_slave_request();
+int handle_start_cycle_slave_request();
+int handle_stop_cycle_slave_request();
+
 #endif /* MASTER_H */

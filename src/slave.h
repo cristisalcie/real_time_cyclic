@@ -17,4 +17,10 @@ typedef struct slave_context_s {
     int shmsegIdx;
 } slave_context_t;
 
+void handle_connect_slave_request();
+int handle_disconnect_slave_request();
+void handle_change_name_slave_request();
+void handle_start_cycle_slave_request();
+void handle_stop_cycle_slave_request();
+
 #endif /* SLAVE_H */
