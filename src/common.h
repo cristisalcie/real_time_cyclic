@@ -38,14 +38,14 @@ typedef enum {
     STOP_SLAVE_CYCLE,  // TODO 1
     CHANGE_SLAVE_NAME,
     SIGNAL_MASTER_PARAMETER,  // Used by slave in request
-    NO_REQUEST,  // Currently only used for req from slave to master TODO 0 SET THIS FOR ALL REQUESTS
+    NO_REQUEST,
     REQUEST_SIZE
 } request_t;
 
 typedef enum {
     NACK,
     ACK,
-    NO_RESPONSE, // Currently only used for res from master to slave TODO 0 SET THIS FOR ALL RESPONSES
+    NO_RESPONSE,
     RESPONSE_SIZE
 } response_t;
 

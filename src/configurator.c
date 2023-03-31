@@ -197,10 +197,12 @@ static void wait_connect_slave_response(pid_t pid) {
             fprintf(stderr, "Unrecognized response received!");
             break;
         }
+        self.control_shmp->request = NO_REQUEST;
+        self.control_shmp->response = NO_RESPONSE;
     }
 }
 
-static int wait_start_master_response() {
+static int wait_master_started_signal() {
     int err;
     int ret;
     sigset_t sig_set;
@@ -212,7 +214,7 @@ static int wait_start_master_response() {
 
     err = sigtimedwait(&sig_set, &sig_info, &timeout);
     if (err == -1) {
-        perror("sigtimedwait() call failed in wait_start_master_response()!");
+        perror("sigtimedwait() call failed in wait_master_started_signal()!");
         return RTC_ERROR;
     } else {
         if ((ret = init_shared_memory()) != RTC_SUCCESS) return ret;
@@ -245,6 +247,8 @@ static void wait_start_slave_cycle_response() {
             fprintf(stderr, "Unrecognized response received!");
             break;
         }
+        self.control_shmp->request = NO_REQUEST;
+        self.control_shmp->response = NO_RESPONSE;
     }
 }
 
@@ -294,7 +298,7 @@ int main(int argc, char *argv[]) {
             } else {
                 // Parent process
                 self.master_pid = fork_pid;
-                if ((ret = wait_start_master_response()) != RTC_SUCCESS) return ret;
+                if ((ret = wait_master_started_signal()) != RTC_SUCCESS) return ret;
                 printf("Started master process %d\n\n", fork_pid);
             }
             break;

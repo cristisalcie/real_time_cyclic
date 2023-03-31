@@ -183,6 +183,8 @@ static void *slave_processor_detached_thread(void *data) {
             log_error("Received response for unrecognized request!");
             break;
         }
+        self.shmp->slave_shmseg[shmsegIdx].req_m_to_s = NO_REQUEST;
+        self.shmp->slave_shmseg[shmsegIdx].res_s_to_m = NO_RESPONSE;
     }
 
     return NULL;
@@ -348,6 +350,8 @@ static void *signal_handler_thread(void *ignore) {
                             }
                             continue;
                         }
+                        self.shmp->slave_shmseg[shmsegIdx].req_m_to_s = NO_REQUEST;
+                        self.shmp->slave_shmseg[shmsegIdx].res_s_to_m = NO_RESPONSE;
                     }
                 }
             } else if (sig_info.si_signo == SIGUSR2) {
