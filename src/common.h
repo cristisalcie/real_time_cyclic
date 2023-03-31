@@ -25,6 +25,7 @@
 #define BOOL_VALUE_UNDEFINED -1
 
 #define WAIT_TIMEOUT_SECONDS 3
+#define COMMUNICATION_CYCLE_THRESHOLD_US 2500
 
 typedef enum {
     START_MASTER,
@@ -63,12 +64,13 @@ typedef struct shmseg_s {
 
     // Modifiable only by configurator
     int requested_parameters;
-    long int communication_cycle_ms;
+    long int communication_cycle_us;
 
     // Fields modifiable by master and slave
     // TODO 1: Slave sets them, master sets them to a DEFINE reset value. Race condition can occur.
     // TODO 1: Slave checks if requested values are set to reset value DEFINE, if not it sets error and stops cycle.
     // TODO 1: In order for master to know whether requested parameters got sent
+    char error_string[STRING_SIZE];  // Slave sets, Master resets
     char string_value[STRING_SIZE];
     int int_value;
     bool bool_value;

@@ -182,7 +182,7 @@ static void wait_connect_slave_response(pid_t pid) {
 
     err = sigtimedwait(&sig_set, &sig_info, &timeout);
     if (err == -1) {
-        perror("sigtimedwait() call failed!");
+        perror("sigtimedwait() call failed in wait_connect_slave_response()!");
     } else {
         switch (self.control_shmp->response)
         {
@@ -212,7 +212,7 @@ static int wait_start_master_response() {
 
     err = sigtimedwait(&sig_set, &sig_info, &timeout);
     if (err == -1) {
-        perror("sigtimedwait() call failed!");
+        perror("sigtimedwait() call failed in wait_start_master_response()!");
         return RTC_ERROR;
     } else {
         if ((ret = init_shared_memory()) != RTC_SUCCESS) return ret;
@@ -231,7 +231,7 @@ static void wait_start_slave_cycle_response() {
 
     err = sigtimedwait(&sig_set, &sig_info, &timeout);
     if (err == -1) {
-        perror("sigtimedwait() call failed!");
+        perror("sigtimedwait() call failed in wait_start_slave_cycle_response()!");
     } else {
         switch (self.control_shmp->response)
         {
@@ -563,7 +563,7 @@ int main(int argc, char *argv[]) {
                     fprintf(stderr, "Invalid number. Please insert a number!\n");
                     break;
                 }
-                self.shmp->slave_shmseg[shmsegIdx].communication_cycle_ms = req_cycle_interval_ms;
+                self.shmp->slave_shmseg[shmsegIdx].communication_cycle_us = req_cycle_interval_ms * 1000;
 
                 free(line);
             }

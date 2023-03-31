@@ -69,6 +69,20 @@ static bool must_change_name(int shmsegIdx) {
     return false;
 }
 
+static bool slave_request_has_errors(shmseg_t *slave_shmseg) {
+    if (slave_shmseg->error_string[0]) {
+        return true;
+    }
+    return false;
+}
+
+static void handle_slave_request_errors(shmseg_t *slave_shmseg) {
+    log_error("Received from slave process [%d]: %s",
+        slave_shmseg->pid,
+        slave_shmseg->error_string);
+    memset(slave_shmseg->error_string, STRING_VALUE_UNDEFINED, STRING_SIZE);
+}
+
 static void *slave_processor_detached_thread(void *data) {
     int shmsegIdx = *(int*)data;
 
@@ -89,16 +103,25 @@ static void *slave_processor_detached_thread(void *data) {
         switch (slave_shmseg->req_s_to_m)
         {
         case SIGNAL_MASTER_PARAMETER:
+            if (slave_request_has_errors(slave_shmseg)) {
+                handle_slave_request_errors(slave_shmseg);
+            }
+
             if (slave_shmseg->requested_parameters & STRING_PARAMETER_BIT) {
-                log_info("Received from slave process %d string parameter %s", slave_shmseg->pid, slave_shmseg->string_value);
+                log_info("Received from slave process [%d] string parameter %s",
+                    slave_shmseg->pid,
+                    slave_shmseg->string_value);
                 memset(slave_shmseg->string_value, STRING_VALUE_UNDEFINED, STRING_SIZE);
             }
             if (slave_shmseg->requested_parameters & INT_PARAMETER_BIT) {
-                log_info("Received from slave process %d int parameter %d", slave_shmseg->pid, slave_shmseg->int_value);
+                log_info("Received from slave process [%d] int parameter %d",
+                    slave_shmseg->pid, slave_shmseg->int_value);
                 slave_shmseg->int_value = INT_VALUE_UNDEFINED;
             }
             if (slave_shmseg->requested_parameters & BOOL_PARAMETER_BIT) {
-                log_info("Received from slave process %d bool parameter %s", slave_shmseg->pid, slave_shmseg->bool_value ? "true" : "false");
+                log_info("Received from slave process [%d] bool parameter %s",
+                    slave_shmseg->pid,
+                    slave_shmseg->bool_value ? "true" : "false");
                 slave_shmseg->bool_value = BOOL_VALUE_UNDEFINED;
             }
 
@@ -445,7 +468,7 @@ static int init_shared_memory() {
     int shmid;
 
     // Get or create if not existing shared memory
-    log_info("Shared memory key = %d", SHARED_MEMORY_KEY);
+    log_debug("Shared memory key = %d", SHARED_MEMORY_KEY);
 
     shmid = shmget(SHARED_MEMORY_KEY, sizeof(shm_t), 0666 | IPC_CREAT);
     if (shmid == -1) {
@@ -466,11 +489,12 @@ static int init_shared_memory() {
 
     for (int i = 0; i < MAX_SLAVES; ++i) {
         self.shmp->slave_shmseg[i].pid = NO_PID;
-        self.shmp->slave_shmseg[i].communication_cycle_ms = DEFAULT_COMMUNICATION_CYCLE_MS;
+        self.shmp->slave_shmseg[i].communication_cycle_us = DEFAULT_COMMUNICATION_CYCLE_MS * 1000;
         self.shmp->slave_shmseg[i].req_m_to_s = NO_REQUEST;
         self.shmp->slave_shmseg[i].req_s_to_m = NO_REQUEST;
         self.shmp->slave_shmseg[i].res_m_to_s = NO_RESPONSE;
         self.shmp->slave_shmseg[i].res_s_to_m = NO_RESPONSE;
+        memset(self.shmp->slave_shmseg[i].error_string, STRING_VALUE_UNDEFINED, STRING_SIZE);
         memset(self.shmp->slave_shmseg[i].string_value, STRING_VALUE_UNDEFINED, STRING_SIZE);
         self.shmp->slave_shmseg[i].int_value = INT_VALUE_UNDEFINED;
         self.shmp->slave_shmseg[i].bool_value = BOOL_VALUE_UNDEFINED;
@@ -482,9 +506,10 @@ static int init_shared_memory() {
 static int init() {
     int ret;
 
-    openlog("master", LOG_PID | LOG_PERROR, LOG_USER);
-    setlogmask(LOG_UPTO(LOG_DEBUG));  // includes all logs 0,1,2 up to 7(DEBUG)
-    // setlogmask(LOG_MASK(LOG_INFO));
+    // openlog("master", LOG_PID | LOG_PERROR, LOG_USER);
+    openlog("master", LOG_PID, LOG_USER);
+    // setlogmask(LOG_UPTO(LOG_DEBUG));  // includes all logs 0,1,2 up to 7(DEBUG)
+    setlogmask(LOG_MASK(LOG_ERR) | LOG_MASK(LOG_INFO));
     log_info("Started master!");
 
     if ((ret = block_signals()) != RTC_SUCCESS) return ret;

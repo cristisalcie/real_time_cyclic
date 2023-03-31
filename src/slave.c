@@ -6,6 +6,7 @@
 #include <string.h>
 #include <semaphore.h>
 #include <pthread.h>
+#include <sys/time.h>
 #include <time.h>
 #include "slave.h"
 
@@ -42,6 +43,33 @@ static int getAssignedShmsegIdx(pid_t pid) {
     return NO_IDX;
 }
 
+static void calculate_parameter_communication_interval() {
+    struct timeval current_timeval;
+    gettimeofday(&current_timeval, NULL);
+
+    if (self.last_communication_timeval.tv_sec == 0 && self.last_communication_timeval.tv_usec == 0) {
+        self.last_communication_timeval.tv_sec = current_timeval.tv_sec;
+        self.last_communication_timeval.tv_usec = current_timeval.tv_usec;
+        return;
+    }
+
+    long int elapsed_seconds_in_us = (current_timeval.tv_sec - self.last_communication_timeval.tv_sec) * 1000000l;
+    long int elapsed_microseconds = elapsed_seconds_in_us + current_timeval.tv_usec - self.last_communication_timeval.tv_usec;
+
+    long int communication_cycle_us = elapsed_microseconds - self.shmp->slave_shmseg[self.shmsegIdx].communication_cycle_us;
+
+    self.communication_cycle_interval_ms = communication_cycle_us / 1000.0;
+
+    self.last_communication_timeval.tv_sec = current_timeval.tv_sec;
+    self.last_communication_timeval.tv_usec = current_timeval.tv_usec;
+
+    if (self.communication_cycle_interval_ms > COMMUNICATION_CYCLE_THRESHOLD_US / 1000.0) {
+        sprintf(self.shmp->slave_shmseg[self.shmsegIdx].error_string,
+            "Exceeded communication cycle set time by %lf miliseconds",
+            self.communication_cycle_interval_ms);
+    }
+}
+
 static void *slave_communication_cycle_detached_thread(void *ignore) {
     while (true) {
         if (sem_wait(&self.allow_communication_cycle)) {
@@ -49,11 +77,9 @@ static void *slave_communication_cycle_detached_thread(void *ignore) {
             return NULL;
         }
 
-        if (self.shmp->slave_shmseg[self.shmsegIdx].req_s_to_m == SIGNAL_MASTER_PARAMETER) {
-            // TODO: Stop cycle
-            // TODO 0: Set error for master
-            // TODO: Send signal to master
-            fprintf(stderr, "TODO: Handle last request not handled yet by master!\n");
+        if (usleep(self.shmp->slave_shmseg[self.shmsegIdx].communication_cycle_us)) {
+            fprintf(stderr, "usleep() failed! Communication cycle thread killed!\n");
+            break;
         }
 
         int rand_value = rand();
@@ -70,20 +96,11 @@ static void *slave_communication_cycle_detached_thread(void *ignore) {
             self.shmp->slave_shmseg[self.shmsegIdx].bool_value = rand_value % 2;
         }
 
+        calculate_parameter_communication_interval();
+
         self.shmp->slave_shmseg[self.shmsegIdx].req_s_to_m = SIGNAL_MASTER_PARAMETER;
         if (kill(self.shmp->master_pid, SIGUSR1)) {
             fprintf(stderr, "Failed to send \"signal master parameter\" signal to master!\n");
-        }
-
-        if (usleep(self.shmp->slave_shmseg[self.shmsegIdx].communication_cycle_ms)) {
-            fprintf(stderr, "usleep() failed! Communication cycle thread killed!\n");
-            break;
-        }
-
-        // sem_post() at the end to continue looping
-        if (sem_post(&self.allow_communication_cycle)) {
-            fprintf(stderr, "sem_post() call failed, continuing...\n");
-            continue;
         }
     }
 
@@ -225,14 +242,12 @@ static void *signal_handler_thread(void *ignore) {
             }
             
             if (sig_info.si_signo == SIGUSR1) {
-                // printf("[SLAVE %s %d] Processing signal SIGUSR1 from process %d\n", self.name, getpid(), sig_info.si_pid);
-
                 if (self.shmsegIdx == NO_IDX) {
                     // First time getting shared memory index.
                     self.shmsegIdx = getAssignedShmsegIdx(getpid());
                     if (self.shmsegIdx == NO_IDX) {
                         // Process has not been assigned a shared memory segment yet.
-                        // TODO 0: Send NACK to master with error message
+                        // TODO 0?: Send NACK to master with error message
                         fprintf(stderr, "Process %d has no assigned shared memory index, continuing...\n", getpid());
                         continue;
                     }
@@ -241,16 +256,31 @@ static void *signal_handler_thread(void *ignore) {
                 switch (self.shmp->slave_shmseg[self.shmsegIdx].res_m_to_s)
                 {
                 case ACK:
+                    // Master processed, allow slave to process and send again
+                    if (sem_post(&self.allow_communication_cycle)) {
+                        fprintf(stderr, "sem_post() call failed, continuing...\n");
+                        continue;
+                    }
                     self.shmp->slave_shmseg[self.shmsegIdx].req_s_to_m = NO_REQUEST;
                     self.shmp->slave_shmseg[self.shmsegIdx].res_m_to_s = NO_RESPONSE;
                     continue;
                 case NACK:
+                    // Master processed, allow slave to process and send again
+                    if (sem_post(&self.allow_communication_cycle)) {
+                        fprintf(stderr, "sem_post() call failed, continuing...\n");
+                        continue;
+                    }
                     // Ignore
                     continue;
                 case NO_RESPONSE:
                     // Did not receive a response from master! Continue checking if received request from master.
                     break;
                 default:
+                    // Master processed, allow slave to process and send again
+                    if (sem_post(&self.allow_communication_cycle)) {
+                        fprintf(stderr, "sem_post() call failed, continuing...\n");
+                        continue;
+                    }
                     fprintf(stderr, "Unrecognized response received from master process %d\n", sig_info.si_pid);
                     continue;
                 }
@@ -386,6 +416,8 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "pthread_join() to join signal handler thread failed\n");
         return RTC_ERROR;
     }
+
+// "Slaves can also send errors along with the data" - so master checks first for errors
 
     return final();
 }
