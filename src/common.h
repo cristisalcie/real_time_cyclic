@@ -37,6 +37,8 @@ typedef enum {
     DISCONNECT_SLAVE,
     START_SLAVE_CYCLE,
     STOP_SLAVE_CYCLE,  // TODO 1
+    PRINT_SLAVE_DATA,
+    AUTOMATIC_TEST,
     CHANGE_SLAVE_NAME,
     SIGNAL_MASTER_PARAMETER,  // Used by slave in request
     NO_REQUEST,
@@ -70,6 +72,7 @@ typedef struct shmseg_s {
     // Fields modifiable by master and slave
     // Slave sets them, master reads and resets them to a DEFINE value in order for master to know
     // whether requested parameters got sent in next the cycle.
+    bool cycle_started;
     char error_string[STRING_SIZE];  // Slave sets, Master resets
     char string_value[STRING_SIZE];
     int int_value;

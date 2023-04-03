@@ -8,11 +8,11 @@ typedef struct slave_context_s {
     char name[SLAVE_NAME_SIZE];
     unsigned int change_name_idx;
     int available_parameters;
-    bool cycle_started;
 
     struct timeval last_communication_timeval;
-    double communication_cycle_interval_ms;
+    double excess_communication_cycle_interval_ms;
     // Signal semaphore to allow parameters communication cycle
+    sem_t master_processed_communication_cycle;
     sem_t allow_communication_cycle;
     int shmsegIdx;
 } slave_context_t;

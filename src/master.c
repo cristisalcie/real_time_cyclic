@@ -37,7 +37,7 @@ static int getAssignedShmsegIdx(pid_t pid) {
 
     for (int i = 0; i < MAX_SLAVES; ++i) {
         if (self.shmp->slave_shmseg[shmsegIdx].pid == pid) {
-            log_debug("Got shared mem idx %d for process %d", shmsegIdx, pid);
+            // log_debug("Got shared mem idx %d for process %d", shmsegIdx, pid);
             return shmsegIdx;
         }
         ++shmsegIdx;
@@ -61,8 +61,9 @@ static int block_signals() {
 
 static bool must_change_name(int shmsegIdx) {
     for (int i = 0; i < MAX_SLAVES; ++i) {
-        if (i == shmsegIdx) continue;
+        if (i == shmsegIdx || self.shmp->slave_shmseg[i].pid == NO_PID) continue;
 
+        log_debug("to_change_name = %s ; other_names %s", self.shmp->slave_shmseg[shmsegIdx].name, self.shmp->slave_shmseg[i].name);
         if (!strcmp(self.shmp->slave_shmseg[shmsegIdx].name, self.shmp->slave_shmseg[i].name)) {
             return true;
         }
@@ -78,11 +79,27 @@ static bool slave_request_has_errors(shmseg_t *slave_shmseg) {
 }
 
 static void *slave_processor_detached_thread(void *data) {
-    int shmsegIdx = *(int*)data;
+    int ret;
+    int slave_pid = *(int*)data;
+    int shmsegIdx = getAssignedShmsegIdx(slave_pid);
 
-    if (must_change_name(shmsegIdx)) {
-        send_change_name_slave_request(shmsegIdx);
+    if (shmsegIdx == NO_IDX) {
+        log_debug("Process %d has no assigned index (expected), assigning...", slave_pid);
+        shmsegIdx = assignShmsegIdx(slave_pid);
+        if (shmsegIdx == NO_IDX) {
+            log_error("Failed to create shared memory index for process %d!", slave_pid);
+            return NULL;
+        }
+        // Set at shared memory index, pid of process owner
+        self.shmp->slave_shmseg[shmsegIdx].pid = slave_pid;
+    } else {
+        log_error("Slave process %d already connected!", slave_pid);
+        return NULL;
     }
+
+    shmseg_t *slave_shmseg = &self.shmp->slave_shmseg[shmsegIdx];
+
+    if ((ret = send_connect_slave_request(slave_shmseg)) != RTC_SUCCESS) return NULL;
 
     while (true) {
         log_debug("Slave processor detached thread with tid %ld preparing to wait for semaphore[%d]", pthread_self(), shmsegIdx);
@@ -92,114 +109,210 @@ static void *slave_processor_detached_thread(void *data) {
             return NULL;
         }
 
-        shmseg_t *slave_shmseg = &self.shmp->slave_shmseg[shmsegIdx];
-
-        switch (slave_shmseg->req_s_to_m)
-        {
-        case SIGNAL_MASTER_PARAMETER:
-            if (slave_request_has_errors(slave_shmseg)) {
-                handle_slave_request_errors(slave_shmseg);
-            }
-
-            if (slave_shmseg->requested_parameters & STRING_PARAMETER_BIT) {
-                if (slave_shmseg->string_value[0] == STRING_VALUE_UNDEFINED) {
-                    log_error("Did not receive requested string parameter from slave process [%d]!",
-                        slave_shmseg->pid);
-                } else {
-                    log_info("Received from slave process [%d] string parameter %s",
-                        slave_shmseg->pid,
-                        slave_shmseg->string_value);
-                    memset(slave_shmseg->string_value, STRING_VALUE_UNDEFINED, STRING_SIZE);
-                }
-            }
-            if (slave_shmseg->requested_parameters & INT_PARAMETER_BIT) {
-                if (slave_shmseg->int_value == INT_VALUE_UNDEFINED) {
-                    log_error("Did not receive requested int parameter from slave process [%d]!",
-                        slave_shmseg->pid);
-                } else {
-                    log_info("Received from slave process [%d] int parameter %d",
-                        slave_shmseg->pid, slave_shmseg->int_value);
-                    slave_shmseg->int_value = INT_VALUE_UNDEFINED;
-                }
-            }
-            if (slave_shmseg->requested_parameters & BOOL_PARAMETER_BIT) {
-                if (slave_shmseg->bool_value == BOOL_VALUE_UNDEFINED) {
-                    log_error("Did not receive requested bool parameter from slave process [%d]!",
-                        slave_shmseg->pid);
-                } else {
-                    log_info("Received from slave process [%d] bool parameter %s",
-                        slave_shmseg->pid,
-                        slave_shmseg->bool_value ? "true" : "false");
-                    slave_shmseg->bool_value = BOOL_VALUE_UNDEFINED;
-                }
-            }
-
-            slave_shmseg->res_m_to_s = ACK;
-            if (kill(slave_shmseg->pid, SIGUSR1)) {
-                log_error("Failed to send ACK signal for SIGNAL_MASTER_PARAMETER to slave process %d!", slave_shmseg->pid);
-            }
-            continue;
-        case NO_REQUEST:
-            // Did not receive a request from slave! Continue checking if received response from slave
-            break;
-        default:
-            log_error("Unrecognized request from slave process %d!", slave_shmseg->pid);
-            continue;
-        }
-
-
-        switch (self.shmp->slave_shmseg[shmsegIdx].req_m_to_s)
-        {
-        case START_SLAVE_CYCLE:
-            switch (self.shmp->slave_shmseg[shmsegIdx].res_s_to_m)
+        if (slave_shmseg->is_connected) {
+            switch (slave_shmseg->req_s_to_m)
             {
-            case NACK:
-                // Forward response to configurator
-                self.control_shmp->response = NACK;
-                if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
-                    log_error("Failed to send NACK signal to configurator!");
+            case SIGNAL_MASTER_PARAMETER:
+                if (slave_request_has_errors(slave_shmseg)) {
+                    handle_slave_request_errors(slave_shmseg);
+                }
+
+                if (slave_shmseg->requested_parameters & STRING_PARAMETER_BIT) {
+                    if (slave_shmseg->string_value[0] == STRING_VALUE_UNDEFINED) {
+                        log_error("Did not receive requested string parameter from slave process [%d]!",
+                            slave_shmseg->pid);
+                    } else {
+                        log_info("Received from slave process [%d] string parameter %s",
+                            slave_shmseg->pid,
+                            slave_shmseg->string_value);
+                        memset(slave_shmseg->string_value, STRING_VALUE_UNDEFINED, STRING_SIZE);
+                    }
+                }
+                if (slave_shmseg->requested_parameters & INT_PARAMETER_BIT) {
+                    if (slave_shmseg->int_value == INT_VALUE_UNDEFINED) {
+                        log_error("Did not receive requested int parameter from slave process [%d]!",
+                            slave_shmseg->pid);
+                    } else {
+                        log_info("Received from slave process [%d] int parameter %d",
+                            slave_shmseg->pid, slave_shmseg->int_value);
+                        slave_shmseg->int_value = INT_VALUE_UNDEFINED;
+                    }
+                }
+                if (slave_shmseg->requested_parameters & BOOL_PARAMETER_BIT) {
+                    if (slave_shmseg->bool_value == BOOL_VALUE_UNDEFINED) {
+                        log_error("Did not receive requested bool parameter from slave process [%d]!",
+                            slave_shmseg->pid);
+                    } else {
+                        log_info("Received from slave process [%d] bool parameter %s",
+                            slave_shmseg->pid,
+                            slave_shmseg->bool_value ? "true" : "false");
+                        slave_shmseg->bool_value = BOOL_VALUE_UNDEFINED;
+                    }
+                }
+
+                slave_shmseg->res_m_to_s = ACK;
+                if (kill(slave_shmseg->pid, SIGUSR1)) {
+                    log_error("Failed to send ACK signal for SIGNAL_MASTER_PARAMETER to slave process %d!", slave_shmseg->pid);
+                }
+                continue;
+            case NO_REQUEST:
+                // Did not receive a request from slave! Continue checking if received response from slave
+                break;
+            default:
+                log_error("Unrecognized request from slave process %d!", slave_shmseg->pid);
+                continue;
+            }
+
+            switch (slave_shmseg->req_m_to_s)
+            {
+            case STOP_SLAVE_CYCLE:
+            case START_SLAVE_CYCLE:
+                switch (slave_shmseg->res_s_to_m)
+                {
+                case NACK:
+                    slave_shmseg->res_s_to_m = NO_RESPONSE;
+                
+                    slave_shmseg->req_m_to_s = NO_REQUEST;
+                    log_info("[DEBUG] slave_shmseg->req_m_to_s = NO_REQUEST");
+
+                    // Forward response to configurator
+                    self.control_shmp->response = NACK;
+                    if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
+                        log_error("Failed to send NACK signal to configurator!");
+                    }
+
+                    break;
+                case ACK:
+                    slave_shmseg->res_s_to_m = NO_RESPONSE;
+                    log_info("[DEBUG] slave_shmseg->req_m_to_s = NO_REQUEST");
+                    slave_shmseg->req_m_to_s = NO_REQUEST;
+
+                    // Forward response to configurator
+                    log_debug("SENT RESPONSE TO CONFIGURATOR TO START_SLAVE_CYCLE/STOP_SLAVE_CYCLE ACK RESPONSE");
+                    self.control_shmp->response = ACK;
+                    if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
+                        log_error("Failed to send ACK signal to configurator!");
+                    }
+
+                    break;
+                default:
+                    slave_shmseg->res_s_to_m = NO_RESPONSE;
+                    log_info("[DEBUG] slave_shmseg->req_m_to_s = NO_REQUEST");
+                    slave_shmseg->req_m_to_s = NO_REQUEST;
+                    log_error("Unrecognized response for start slave cycle request received!");
+                    break;
                 }
                 break;
-            case ACK:
-                // Forward response to configurator
-                self.control_shmp->response = ACK;
-                if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
-                    log_error("Failed to send ACK signal to configurator!");
+
+            default:
+                slave_shmseg->res_s_to_m = NO_RESPONSE;
+                slave_shmseg->req_m_to_s = NO_REQUEST;
+                log_error("Received response for unrecognized request!");
+                break;
+            }
+        } else {
+            switch (slave_shmseg->req_m_to_s)
+            {
+            case CONNECT_SLAVE:
+                switch (slave_shmseg->res_s_to_m) {
+                case NACK:
+                    slave_shmseg->res_s_to_m = NO_RESPONSE;
+                    log_debug("slave_shmseg->res_s_to_m = NO_RESPONSE");
+
+                    self.control_shmp->response = NACK;
+                    if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
+                        log_error("Failed to send NACK signal to configurator!");
+                    }
+                    slave_shmseg->req_m_to_s = NO_REQUEST;
+                    log_debug("slave_shmseg->req_m_to_s = NO_REQUEST");
+                    break;
+                case ACK:
+                    slave_shmseg->res_s_to_m = NO_RESPONSE;
+                    log_debug("slave_shmseg->res_s_to_m = NO_RESPONSE");
+
+                    if (must_change_name(shmsegIdx)) {
+                        send_change_name_slave_request(shmsegIdx);
+                    } else {
+                        slave_shmseg->is_connected = true;
+                        slave_shmseg->req_m_to_s = NO_REQUEST;
+                        log_debug("slave_shmseg->req_m_to_s = NO_REQUEST");
+                        self.control_shmp->response = ACK;
+                        if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
+                            log_error("Failed to send ACK signal to configurator!");
+                        }
+                    }
+
+                    break;
+                default:
+                    slave_shmseg->res_s_to_m = NO_RESPONSE;
+                    log_debug("slave_shmseg->res_s_to_m = NO_RESPONSE");
+                    log_error("Unrecognized command from process %d, continuing...", slave_pid);
+                    slave_shmseg->req_m_to_s = NO_REQUEST;
+                    log_debug("slave_shmseg->req_m_to_s = NO_REQUEST");
+                    self.control_shmp->response = NACK;
+                    if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
+                        log_error("Failed to send NACK signal to configurator!");
+                    }
+                    break;
+                }
+                break;
+
+            case CHANGE_SLAVE_NAME:
+                switch (slave_shmseg->res_s_to_m)
+                {
+                case NACK:
+                    slave_shmseg->res_s_to_m = NO_RESPONSE;
+                    log_debug("slave_shmseg->res_s_to_m = NO_RESPONSE");
+
+                    slave_shmseg->req_m_to_s = NO_REQUEST;
+                    log_debug("slave_shmseg->req_m_to_s = NO_REQUEST");
+
+                    // TODO: Disconnect slave!
+                    self.control_shmp->response = NACK;
+                    if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
+                        log_error("Failed to send NACK signal to configurator!");
+                    }
+
+                    break;
+                case ACK:
+                    slave_shmseg->res_s_to_m = NO_RESPONSE;
+                    log_debug("slave_shmseg->res_s_to_m = NO_RESPONSE");
+
+                    if (must_change_name(shmsegIdx)) {
+                        send_change_name_slave_request(shmsegIdx);
+                    } else {
+                        slave_shmseg->is_connected = true;
+
+                        log_debug("slave_shmseg->req_m_to_s = NO_REQUEST");
+                        slave_shmseg->req_m_to_s = NO_REQUEST;
+
+                        self.control_shmp->response = ACK;
+                        if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
+                            log_error("Failed to send ACK signal to configurator!");
+                        }
+                    }
+                    break;
+                
+                default:
+                    slave_shmseg->res_s_to_m = NO_RESPONSE;
+                    log_debug("slave_shmseg->res_s_to_m = NO_RESPONSE");
+                    slave_shmseg->req_m_to_s = NO_REQUEST;
+                    log_debug("slave_shmseg->req_m_to_s = NO_REQUEST");
+                    log_error("Unrecognized response for name change request received!");
+                    break;
                 }
                 break;
             default:
-                log_error("Unrecognized response for start slave cycle request received!");
+                log_error("Unrecognized request received for response for process %d", slave_pid);
                 break;
             }
-            break;
-        case CHANGE_SLAVE_NAME:
-            switch (self.shmp->slave_shmseg[shmsegIdx].res_s_to_m)
-            {
-            case NACK:
-                // TODO: Disconnect slave!
-                break;
-            case ACK:
-                if (must_change_name(shmsegIdx)) {
-                    send_change_name_slave_request(shmsegIdx);
-                }
-                break;
-            default:
-                log_error("Unrecognized response for name change request received!");
-                break;
-            }
-            break;
-        default:
-            log_error("Received response for unrecognized request!");
-            break;
         }
-        self.shmp->slave_shmseg[shmsegIdx].req_m_to_s = NO_REQUEST;
-        self.shmp->slave_shmseg[shmsegIdx].res_s_to_m = NO_RESPONSE;
     }
 
     return NULL;
 }
 
-static int create_slave_processor_detached_thread(int shmsegIdx) {
+static int create_slave_processor_detached_thread(int slave_pid) {
     pthread_t tid;
     pthread_attr_t attr;
     int ret;
@@ -216,7 +329,7 @@ static int create_slave_processor_detached_thread(int shmsegIdx) {
         return RTC_ERROR;
     }
 
-    ret = pthread_create(&tid, &attr, slave_processor_detached_thread, (void*)&shmsegIdx);
+    ret = pthread_create(&tid, &attr, slave_processor_detached_thread, (void*)&slave_pid);
     if (ret) {
         log_error("pthread_create() call failed!");
         return RTC_ERROR;
@@ -327,10 +440,10 @@ static int init_shared_memory() {
 static int init() {
     int ret;
 
-    // openlog("master", LOG_PID | LOG_PERROR, LOG_USER);
-    openlog("master", LOG_PID, LOG_USER);
-    // setlogmask(LOG_UPTO(LOG_DEBUG));  // includes all logs 0,1,2 up to 7(DEBUG)
-    setlogmask(LOG_MASK(LOG_ERR) | LOG_MASK(LOG_INFO));
+    openlog("master", LOG_PID | LOG_PERROR, LOG_USER);
+    // openlog("master", LOG_PID, LOG_USER);
+    setlogmask(LOG_UPTO(LOG_DEBUG));  // includes all logs 0,1,2 up to 7(DEBUG)
+    // setlogmask(LOG_MASK(LOG_ERR) | LOG_MASK(LOG_INFO));
     log_info("Started master!");
 
     if ((ret = block_signals()) != RTC_SUCCESS) return ret;
@@ -342,70 +455,33 @@ static int init() {
 }
 
 
-static void *signal_handler_thread(void *ignore) {
+static void *signal_handler_thread(void *data) {
+    int signal_number = *(int*)data;
     int err;
     sigset_t sig_set;
     siginfo_t sig_info;
     sigemptyset(&sig_set);
-    sigaddset(&sig_set, SIGUSR1);
-    sigaddset(&sig_set, SIGUSR2);
+    sigaddset(&sig_set, signal_number);
 
     while (true) {
-        log_debug("Waiting for signal!");
+        // log_debug("[%ld] Waiting for signal!", pthread_self());
         err = sigwaitinfo(&sig_set, &sig_info);
         if (err == -1) {
-            log_error("sigwaitinfo() call failed!");
+            // log_error("[%ld] sigwaitinfo() call failed!", pthread_self());
         } else {
-            log_debug("Processing signal %d from process %d", sig_info.si_signo, sig_info.si_pid);
+            // log_debug("[%ld] Processing signal %d from process %d", pthread_self(), sig_info.si_signo, sig_info.si_pid);
 
-            if (sig_info.si_signo == SIGUSR1) {  // SIGUSR1 communication dedicated to master-slave
+            if (sig_info.si_signo == SIGUSR1) {
                 int shmsegIdx = getAssignedShmsegIdx(sig_info.si_pid);
 
                 if (shmsegIdx == NO_IDX) {
-                    log_error("Received signal SIGUSR1 from unrecognized process %d, continuing...", sig_info.si_pid);
+                    // log_error("Received signal SIGUSR1 from unrecognized process %d, continuing...", sig_info.si_pid);
                     continue;
                 } else {
-                    if (self.shmp->slave_shmseg[shmsegIdx].is_connected) {
-                        // Allow thread allocated for pid to process
-                        if (sem_post(&(self.sig_semaphore[shmsegIdx]))) {
-                            log_error("sem_post() call failed, continuing...");
-                            continue;
-                        }
-                    } else {
-                        // Surely received response on CONNECT_SLAVE request
-                        // Else case must exist because we need to create a
-                        // thread to handle processing for this pid in the future
-                        switch (self.shmp->slave_shmseg[shmsegIdx].res_s_to_m) {
-                        case NACK:
-                            self.control_shmp->response = NACK;
-                            if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
-                                log_error("Failed to send NACK signal to configurator!");
-                            }
-                            break;
-                        case ACK:
-                            if (create_slave_processor_detached_thread(shmsegIdx) != RTC_SUCCESS) {
-                                log_error("Failed to create slave processor detached thread, continuing...");
-                                continue;
-                            }
-                            self.shmp->slave_shmseg[shmsegIdx].is_connected = true;
-
-                            // Forward response to configurator
-                            self.control_shmp->response = ACK;
-                            if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
-                                log_error("Failed to send ACK signal to configurator!");
-                            }
-
-                            break;
-                        default:
-                            log_error("Unrecognized command from process %d, continuing...", sig_info.si_pid);
-                            self.control_shmp->response = NACK;
-                            if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
-                                log_error("Failed to send NACK signal to configurator!");
-                            }
-                            continue;
-                        }
-                        self.shmp->slave_shmseg[shmsegIdx].req_m_to_s = NO_REQUEST;
-                        self.shmp->slave_shmseg[shmsegIdx].res_s_to_m = NO_RESPONSE;
+                    // Allow thread allocated for pid to process
+                    if (sem_post(&(self.sig_semaphore[shmsegIdx]))) {
+                        // log_error("sem_post() call failed, continuing...");
+                        continue;
                     }
                 }
             } else if (sig_info.si_signo == SIGUSR2) {
@@ -421,7 +497,7 @@ static void *signal_handler_thread(void *ignore) {
                         // ACK response is send to configurator when ACK response received from slave
                         self.control_shmp->response = NACK;
                         if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
-                            log_error("Failed to send NACK signal to configurator!");
+                            // log_error("Failed to send NACK signal to configurator!");
                         }
                     }
                     break;
@@ -433,15 +509,21 @@ static void *signal_handler_thread(void *ignore) {
                         // ACK response is send to configurator when ACK response received from slave
                         self.control_shmp->response = NACK;
                         if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
-                            log_error("Failed to send NACK signal to configurator!");
+                            // log_error("Failed to send NACK signal to configurator!");
                         }
                     }
                     break;
                 case STOP_SLAVE_CYCLE:
-                    handle_stop_cycle_slave_request();
+                    if (handle_stop_cycle_slave_request() != RTC_SUCCESS) {
+                        // ACK response is send to configurator when ACK response received from slave
+                        self.control_shmp->response = NACK;
+                        if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
+                            // log_error("Failed to send NACK signal to configurator!");
+                        }
+                    }
                     break;
                 default:
-                    log_error("Received unknown command from configurator process %d", self.control_shmp->configurator_pid);
+                    // log_error("Received unknown command from configurator process %d", self.control_shmp->configurator_pid);
                     break;
                 }
             }
@@ -454,9 +536,9 @@ static void *signal_handler_thread(void *ignore) {
 int send_change_name_slave_request(int shmsegIdx) {
     pid_t slave_pid = self.shmp->slave_shmseg[shmsegIdx].pid;
 
-    log_debug("send_change_name_slave_request to process %d", slave_pid);
-
     self.shmp->slave_shmseg[shmsegIdx].req_m_to_s = CHANGE_SLAVE_NAME;
+
+    log_debug("send_change_name_slave_request to process %d", slave_pid);
     if (kill(slave_pid, SIGUSR1)) {
         log_error("Failed to send change name slave request to process %d!", slave_pid);
         return RTC_ERROR;
@@ -464,32 +546,13 @@ int send_change_name_slave_request(int shmsegIdx) {
     return RTC_SUCCESS;
 }
 
-int send_connect_slave_request() {
-    pid_t slave_pid = self.control_shmp->affected_slave_pid;
-    
-    int shmsegIdx = getAssignedShmsegIdx(slave_pid);
-    if (shmsegIdx == NO_IDX) {
-        log_debug("Process %d has no assigned index (expected), assigning...", slave_pid);
-        shmsegIdx = assignShmsegIdx(slave_pid);
-        if (shmsegIdx == NO_IDX) {
-            log_error("Failed to create shared memory index for process %d!", slave_pid);
-            return RTC_ERROR;
-        }
-        // Set at shared memory index, pid of process owner
-        self.shmp->slave_shmseg[shmsegIdx].pid = slave_pid;
-    } else {
-        log_error("Slave process %d already connected!", slave_pid);
-        return RTC_ERROR;
-    }
-    
-    self.shmp->slave_shmseg[shmsegIdx].req_m_to_s = CONNECT_SLAVE;
+int send_connect_slave_request(shmseg_t *slave_shmseg) {
+    slave_shmseg->req_m_to_s = CONNECT_SLAVE;
 
-    log_debug("send_connect_slave_request to process %d", slave_pid);
-    if (kill(slave_pid, SIGUSR1)) {
-        log_error("Failed to send connect slave request to process %d!", slave_pid);
-        if (shmsegIdx != NO_IDX)
-            self.shmp->slave_shmseg[shmsegIdx].pid = NO_PID;
-
+    log_debug("send_connect_slave_request to process %d", slave_shmseg->pid);
+    if (kill(slave_shmseg->pid, SIGUSR1)) {
+        log_error("Failed to send connect slave request to process %d!", slave_shmseg->pid);
+        // TODO 9: Reset slave shared memory
         return RTC_ERROR;
     }
     return RTC_SUCCESS;
@@ -500,20 +563,39 @@ int send_start_cycle_slave_request() {
 
     int shmsegIdx = getAssignedShmsegIdx(slave_pid);
     if (shmsegIdx == NO_IDX) {
-        log_debug("Process %d has no assigned index!", slave_pid);
+        // log_debug("Process %d has no assigned index!", slave_pid);
         return RTC_ERROR;
     }
 
     if (self.shmp->slave_shmseg[shmsegIdx].communication_cycle_us == NOT_SET_ERROR_COMMUNICATION_CYCLE_MS) {
-        log_error("Process %d has not been set communication cycle variable!", slave_pid);
+        // log_error("Process %d has not been set communication cycle variable!", slave_pid);
         return RTC_ERROR;
     }
 
     self.shmp->slave_shmseg[shmsegIdx].req_m_to_s = START_SLAVE_CYCLE;
 
-    log_debug("send_start_cycle_slave_request to process %d", slave_pid);
+    // log_debug("send_start_cycle_slave_request to process %d", slave_pid);
     if (kill(slave_pid, SIGUSR1)) {
-        log_error("Failed to send start cycle slave request to process %d!", slave_pid);
+        // log_error("Failed to send start cycle slave request to process %d!", slave_pid);
+        return RTC_ERROR;
+    }
+    return RTC_SUCCESS;
+}
+
+int send_stop_cycle_slave_request() {
+    pid_t slave_pid = self.control_shmp->affected_slave_pid;
+
+    int shmsegIdx = getAssignedShmsegIdx(slave_pid);
+    if (shmsegIdx == NO_IDX) {
+        // log_debug("Process %d has no assigned index!", slave_pid);
+        return RTC_ERROR;
+    }
+
+    self.shmp->slave_shmseg[shmsegIdx].req_m_to_s = STOP_SLAVE_CYCLE;
+
+    // log_debug("send_stop_cycle_slave_request to process %d", slave_pid);
+    if (kill(slave_pid, SIGUSR1)) {
+        // log_error("Failed to send stop cycle slave request to process %d!", slave_pid);
         return RTC_ERROR;
     }
     return RTC_SUCCESS;
@@ -538,7 +620,13 @@ int handle_configurator_delete_slave_request() {
 }
 
 int handle_configurator_connect_slave_request() {
-    return send_connect_slave_request();
+    // Create slave process thread that will handle slave.
+    if (create_slave_processor_detached_thread(self.control_shmp->affected_slave_pid) != RTC_SUCCESS) {
+        log_error("Failed to create slave processor detached thread, continuing...");
+        return RTC_ERROR;
+    }
+
+    return RTC_SUCCESS;
 }
 
 int handle_configurator_disconnect_slave_request() {
@@ -547,12 +635,11 @@ int handle_configurator_disconnect_slave_request() {
 }
 
 int handle_start_cycle_slave_request() {
-    return send_start_cycle_slave_request();;
+    return send_start_cycle_slave_request();
 }
 
 int handle_stop_cycle_slave_request() {
-    // TODO
-    return RTC_SUCCESS;
+    return send_stop_cycle_slave_request();
 }
 
 
@@ -560,10 +647,18 @@ int main(int argc, char *argv[]) {
     init(); // TODO: Failed initialization => end program
 
     int ret;
-    pthread_t tid;
+    pthread_t tid1;
+    pthread_t tid2;
+    int signal_number1 = SIGUSR1;
+    int signal_number2 = SIGUSR2;
 
-    // Create signal listening thread
-    ret = pthread_create(&tid, NULL, signal_handler_thread, NULL);
+    // Create signal listening threads
+    ret = pthread_create(&tid1, NULL, signal_handler_thread, (void*)&signal_number1);
+    if (ret) {
+        log_error("pthread_create() to create signal handler thread failed");
+        return RTC_ERROR;
+    }
+    ret = pthread_create(&tid2, NULL, signal_handler_thread, (void*)&signal_number2);
     if (ret) {
         log_error("pthread_create() to create signal handler thread failed");
         return RTC_ERROR;
@@ -576,7 +671,12 @@ int main(int argc, char *argv[]) {
     }
 
     // Wait for signal listening thread to end execution
-    ret = pthread_join(tid, NULL);                        
+    ret = pthread_join(tid1, NULL);                        
+    if (ret < 0) {
+        log_error("pthread_join() to join signal handler thread failed");
+        return RTC_ERROR;
+    }
+    ret = pthread_join(tid2, NULL);                        
     if (ret < 0) {
         log_error("pthread_join() to join signal handler thread failed");
         return RTC_ERROR;

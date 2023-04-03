@@ -35,8 +35,9 @@ typedef struct master_context_s {
 } master_context_t;
 
 int send_change_name_slave_request(int shmsegIdx);
-int send_connect_slave_request();
+int send_connect_slave_request(shmseg_t *slave_shmseg);
 int send_start_cycle_slave_request();
+int send_stop_cycle_slave_request();
 
 void handle_slave_request_errors(shmseg_t *slave_shmseg);
 int handle_configurator_stop_master_request();
