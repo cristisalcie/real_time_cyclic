@@ -10,7 +10,7 @@
 
 
 
-static master_context_t self = { .shmp = NULL };
+static master_context_t self;
 
 
 
@@ -31,7 +31,7 @@ static int assignShmsegIdx(pid_t pid) {
     return NO_IDX;
 }
 
-// Returns assigned index if successful. NO_IDX if failed.
+// Use async signal safe functions. Returns assigned index if successful. NO_IDX if failed.
 static int getAssignedShmsegIdx(pid_t pid) {
     int shmsegIdx = pid % MAX_SLAVES;
 
@@ -52,7 +52,7 @@ static int block_signals() {
     sigemptyset(&block_mask);
     sigaddset(&block_mask, SIGUSR1);
     sigaddset(&block_mask, SIGUSR2);
-    if (sigprocmask(SIG_BLOCK, &block_mask, NULL) == -1) {
+    if (pthread_sigmask(SIG_BLOCK, &block_mask, NULL) == -1) {
         log_error("Can't block signals!");
         return RTC_ERROR;
     }
@@ -339,6 +339,26 @@ static int create_slave_processor_detached_thread(int slave_pid) {
     return RTC_SUCCESS;
 }
 
+static void async_signal_handler(int signum, siginfo_t *sig_info, void *context) {
+    switch (signum)
+    {
+    case SIGUSR1:
+        {
+            int shmsegIdx = getAssignedShmsegIdx(sig_info->si_pid);
+
+            if (shmsegIdx == NO_IDX) {
+                // TODO: log_error("Received signal SIGUSR1 from unrecognized process %d, continuing...", sig_info->si_pid);
+            } else {
+                // Allow thread allocated for pid to process
+                if (sem_post(&(self.sig_semaphore[shmsegIdx]))) {
+                    // TODO: log_error("sem_post() call failed, continuing...");
+                }
+            }
+            break;
+        }
+    }
+}
+
 
 static int destroy_signal_semaphores() {
     for (int i = 0; i < MAX_SLAVES; ++i) {
@@ -354,7 +374,10 @@ static int destroy_signal_semaphores() {
 static int final() {
     int ret = RTC_SUCCESS;
 
-    ret = destroy_signal_semaphores();
+    ret |= pthread_mutex_unlock(&self.lock_async_handler_threads);
+
+    ret |= destroy_signal_semaphores();
+    ret |= pthread_mutex_destroy(&self.lock_async_handler_threads);
 
     // Deattach from shared memory
     if (shmdt(self.shmp)) {
@@ -437,11 +460,42 @@ static int init_shared_memory() {
     return RTC_SUCCESS;
 }
 
+// Entire process signal handler initialization
+static int init_async_signal_handler() {
+    struct sigaction sact;
+
+    // Only allow SIGUSR1 to interrupt handler execution
+    sigfillset(&sact.sa_mask);
+    sigdelset(&sact.sa_mask, SIGUSR1);
+    sact.sa_flags = SA_SIGINFO | SA_NODEFER;
+    sact.sa_sigaction = async_signal_handler;
+
+    // Register SIGUSR1 to signal_handler with sact options
+    if (sigaction(SIGUSR1, &sact, NULL) != 0) {
+        log_error("sigaction() failed!");
+        return RTC_ERROR;
+    }
+
+    if (pthread_mutex_init(&self.lock_async_handler_threads, NULL)) {
+        log_error("pthread_mutex_init() failed!");
+        return RTC_ERROR;
+    }
+
+    if (pthread_mutex_lock(&self.lock_async_handler_threads)) {
+        log_error("pthread_mutex_lock() failed!");
+        return RTC_ERROR;
+    }
+
+    return RTC_SUCCESS;
+}
+
 static int init() {
+    memset(&self, 0, sizeof(master_context_t));
+    
     int ret;
 
-    openlog("master", LOG_PID | LOG_PERROR, LOG_USER);
-    // openlog("master", LOG_PID, LOG_USER);
+    // openlog("master", LOG_PID | LOG_PERROR, LOG_USER);
+    openlog("master", LOG_PID, LOG_USER);
     setlogmask(LOG_UPTO(LOG_DEBUG));  // includes all logs 0,1,2 up to 7(DEBUG)
     // setlogmask(LOG_MASK(LOG_ERR) | LOG_MASK(LOG_INFO));
     log_info("Started master!");
@@ -450,41 +504,45 @@ static int init() {
     if ((ret = init_shared_memory()) != RTC_SUCCESS) return ret;
     if ((ret = init_control_shared_memory()) != RTC_SUCCESS) return ret;
     if ((ret = init_signal_semaphores()) != RTC_SUCCESS) return ret;
+    if ((ret = init_async_signal_handler()) != RTC_SUCCESS) return ret;
 
     return RTC_SUCCESS;
 }
 
+// Purpose of this function is to have a thread be able to receive unblocked signals to call handlers async
+static void *async_signal_handler_thread(void *ignore) {
+    sigset_t unblock_mask;
+    sigemptyset(&unblock_mask);
+    sigaddset(&unblock_mask, SIGUSR1);
+    if (pthread_sigmask(SIG_UNBLOCK, &unblock_mask, NULL) == -1) {
+        log_error("Failed to unblock SIGUSR1");
+        return NULL;
+    }
 
-static void *signal_handler_thread(void *data) {
-    int signal_number = *(int*)data;
+    // Block this thread into a mutex
+    if (pthread_mutex_lock(&self.lock_async_handler_threads)) {
+        log_error("Failed to keep alive async_signal_handler_thread()");
+    }
+
+    return NULL;
+}
+
+static void *sync_signal_handler_thread(void *ignore) {
     int err;
     sigset_t sig_set;
     siginfo_t sig_info;
     sigemptyset(&sig_set);
-    sigaddset(&sig_set, signal_number);
+    sigaddset(&sig_set, SIGUSR2);
 
     while (true) {
-        // log_debug("[%ld] Waiting for signal!", pthread_self());
+        log_debug("[%ld] Waiting for signal!", pthread_self());
         err = sigwaitinfo(&sig_set, &sig_info);
         if (err == -1) {
-            // log_error("[%ld] sigwaitinfo() call failed!", pthread_self());
+            log_error("[%ld] sigwaitinfo() call failed!", pthread_self());
         } else {
-            // log_debug("[%ld] Processing signal %d from process %d", pthread_self(), sig_info.si_signo, sig_info.si_pid);
+            log_debug("[%ld] Processing signal %d from process %d", pthread_self(), sig_info.si_signo, sig_info.si_pid);
 
-            if (sig_info.si_signo == SIGUSR1) {
-                int shmsegIdx = getAssignedShmsegIdx(sig_info.si_pid);
-
-                if (shmsegIdx == NO_IDX) {
-                    // log_error("Received signal SIGUSR1 from unrecognized process %d, continuing...", sig_info.si_pid);
-                    continue;
-                } else {
-                    // Allow thread allocated for pid to process
-                    if (sem_post(&(self.sig_semaphore[shmsegIdx]))) {
-                        // log_error("sem_post() call failed, continuing...");
-                        continue;
-                    }
-                }
-            } else if (sig_info.si_signo == SIGUSR2) {
+            if (sig_info.si_signo == SIGUSR2) {
                 switch (self.control_shmp->request) {
                 case STOP_MASTER:
                     handle_configurator_stop_master_request();
@@ -497,7 +555,7 @@ static void *signal_handler_thread(void *data) {
                         // ACK response is send to configurator when ACK response received from slave
                         self.control_shmp->response = NACK;
                         if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
-                            // log_error("Failed to send NACK signal to configurator!");
+                            log_error("Failed to send NACK signal to configurator!");
                         }
                     }
                     break;
@@ -509,7 +567,7 @@ static void *signal_handler_thread(void *data) {
                         // ACK response is send to configurator when ACK response received from slave
                         self.control_shmp->response = NACK;
                         if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
-                            // log_error("Failed to send NACK signal to configurator!");
+                            log_error("Failed to send NACK signal to configurator!");
                         }
                     }
                     break;
@@ -518,12 +576,12 @@ static void *signal_handler_thread(void *data) {
                         // ACK response is send to configurator when ACK response received from slave
                         self.control_shmp->response = NACK;
                         if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
-                            // log_error("Failed to send NACK signal to configurator!");
+                            log_error("Failed to send NACK signal to configurator!");
                         }
                     }
                     break;
                 default:
-                    // log_error("Received unknown command from configurator process %d", self.control_shmp->configurator_pid);
+                    log_error("Received unknown command from configurator process %d", self.control_shmp->configurator_pid);
                     break;
                 }
             }
@@ -649,16 +707,14 @@ int main(int argc, char *argv[]) {
     int ret;
     pthread_t tid1;
     pthread_t tid2;
-    int signal_number1 = SIGUSR1;
-    int signal_number2 = SIGUSR2;
 
     // Create signal listening threads
-    ret = pthread_create(&tid1, NULL, signal_handler_thread, (void*)&signal_number1);
+    ret = pthread_create(&tid1, NULL, async_signal_handler_thread, NULL);
     if (ret) {
         log_error("pthread_create() to create signal handler thread failed");
         return RTC_ERROR;
     }
-    ret = pthread_create(&tid2, NULL, signal_handler_thread, (void*)&signal_number2);
+    ret = pthread_create(&tid2, NULL, sync_signal_handler_thread, NULL);
     if (ret) {
         log_error("pthread_create() to create signal handler thread failed");
         return RTC_ERROR;
@@ -681,22 +737,6 @@ int main(int argc, char *argv[]) {
         log_error("pthread_join() to join signal handler thread failed");
         return RTC_ERROR;
     }
-
-
-
-// USE SEMAPHORE
-
-    // signal thread -> slave mutex + lock mutex + create slave thread + send ack back to slave
-    // slave thread tries to take the lock mutex inside while(1) but cant
-    // slave process sends sigusr1
-    // signal thread gets signal and unlocks mutex for slave thread
-    // slave thread got lock -> process request -> finally mutex already locked return to while condition trying to take lock again
-    // problem - what if slave thread because of error sends another x2 sigusr1 and corresponding slave thread of master did not finish first execution hence unlocks mutex and then it finishes first execution and unlocks mutex again...
-
-    // signal thread -> create slave semaphore with 0 (resources) + send ack back to slave
-    // slave thread tries to take a resource from semaphore inside while(1) but cant cuz its 0
-    // signal thread receives sigusr1 from slave and adds 1 resource to semaphore of the corresponding slave thread
-    // slave thread can now take 1 resource and execute -> finished exec back to condition and there is no resource.
 
     return final();
 }

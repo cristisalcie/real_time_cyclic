@@ -32,6 +32,8 @@ typedef struct master_context_s {
 
     // Signal sleeping processor slave threads using semaphore
     sem_t sig_semaphore[MAX_SLAVES];
+
+    pthread_mutex_t lock_async_handler_threads;
 } master_context_t;
 
 int send_change_name_slave_request(int shmsegIdx);

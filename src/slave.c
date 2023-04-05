@@ -12,7 +12,7 @@
 
 
 
-static slave_context_t self = { .shmp = NULL };
+static slave_context_t self;
 
 
 
@@ -130,7 +130,7 @@ static void *slave_communication_cycle_detached_thread(void *ignore) {
             ++threshold;
             // return NULL;
         }
-        printf("[DEBUG %d] master_processed_communication_cycle, threshold = %d >= 10 ?\n", getpid(), threshold);
+        printf("[DEBUG %d] master_processed_communication_cycle, threshold = %d >= 20 ?\n", getpid(), threshold);
     }
 
     return NULL;

@@ -10,7 +10,7 @@
 
 
 
-static configurator_context_t self = { .shmp = NULL, .control_shmp = NULL };
+static configurator_context_t self;
 
 
 
@@ -365,6 +365,8 @@ int wait_master_started_signal() {
 
 int main(int argc, char *argv[]) {
     int ret;
+
+    memset(&self, 0, sizeof(configurator_context_t));
 
     memset(self.created_slave, 0, MAX_SLAVES * sizeof(created_slave_t));
     for (int i = 0; i < MAX_SLAVES; ++i) {
@@ -766,7 +768,8 @@ int main(int argc, char *argv[]) {
             char slave_name[] = "asd";
             char available_parameters[] = "111";
             char requested_parameters[] = "010";
-            int communication_cycle_us = 1750 * 1000;
+            // int communication_cycle_us = 1750 * 1000;
+            int communication_cycle_us = 500 * 1000;
 
             printf("Insert number of extra slaves to test application with: ");
             {
