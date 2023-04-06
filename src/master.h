@@ -36,6 +36,17 @@ typedef struct master_context_s {
     pthread_mutex_t lock_async_handler_threads;
 } master_context_t;
 
+
+int init_signal_semaphores();
+int init_control_shared_memory();
+void init_slave_shmseg_shared_memory();
+int init_shared_memory();
+int init_async_signal_handler();
+int init();
+
+int destroy_signal_semaphores();
+int final();
+
 void send_configurator_ack_response();
 void send_configurator_nack_response();
 
@@ -44,6 +55,7 @@ void send_slave_nack_response(shmseg_t *slave_shmseg);
 
 int send_change_name_slave_request(int shmsegIdx);
 int send_connect_slave_request(shmseg_t *slave_shmseg);
+int send_disconnect_slave_request(shmseg_t *slave_shmseg);
 int send_start_cycle_slave_request();
 int send_stop_cycle_slave_request();
 

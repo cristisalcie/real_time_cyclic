@@ -75,6 +75,12 @@ static bool slave_request_has_errors(shmseg_t *slave_shmseg) {
     return slave_shmseg->shmseg_error_current_size;
 }
 
+static void reset_slave_shmseg(shmseg_t *slave_shmseg) {
+    log_debug("Resetting slave shmseg that was for pid %d", slave_shmseg->pid);
+    memset(slave_shmseg, 0, sizeof(shmseg_t));
+    init_slave_shmseg_shared_memory(slave_shmseg);
+}
+
 static void *slave_processor_detached_thread(void *data) {
     int ret;
     int slave_pid = *(int*)data;
@@ -160,15 +166,39 @@ static void *slave_processor_detached_thread(void *data) {
 
             switch (slave_shmseg->req_m_to_s)
             {
+            case DISCONNECT_SLAVE:
+                switch (slave_shmseg->res_s_to_m)
+                {
+                case NACK:
+                    log_error("Failed to disconnect slave!");
+                    slave_shmseg->res_s_to_m = NO_RESPONSE;
+                
+                    slave_shmseg->req_m_to_s = NO_REQUEST;
+
+                    send_configurator_nack_response();
+                    break;
+                case ACK:
+                    reset_slave_shmseg(slave_shmseg);
+                    slave_shmseg->res_s_to_m = NO_RESPONSE;
+                    slave_shmseg->req_m_to_s = NO_REQUEST;
+                    send_configurator_ack_response();
+                    return NULL;  // Stop detached thread
+                default:
+                    slave_shmseg->res_s_to_m = NO_RESPONSE;
+                    slave_shmseg->req_m_to_s = NO_REQUEST;
+                    log_error("Unrecognized response received to master disconnect slave request!");
+                    break;
+                }
+                break;
             case STOP_SLAVE_CYCLE:
             case START_SLAVE_CYCLE:
                 switch (slave_shmseg->res_s_to_m)
                 {
                 case NACK:
+                    log_debug("Failed to start slave cycle!");
                     slave_shmseg->res_s_to_m = NO_RESPONSE;
                 
                     slave_shmseg->req_m_to_s = NO_REQUEST;
-                    log_info("[DEBUG] slave_shmseg->req_m_to_s = NO_REQUEST");
 
                     // Forward response to configurator
                     send_configurator_nack_response();
@@ -176,7 +206,6 @@ static void *slave_processor_detached_thread(void *data) {
                     break;
                 case ACK:
                     slave_shmseg->res_s_to_m = NO_RESPONSE;
-                    log_info("[DEBUG] slave_shmseg->req_m_to_s = NO_REQUEST");
                     slave_shmseg->req_m_to_s = NO_REQUEST;
 
                     // Forward response to configurator
@@ -185,7 +214,6 @@ static void *slave_processor_detached_thread(void *data) {
                     break;
                 default:
                     slave_shmseg->res_s_to_m = NO_RESPONSE;
-                    log_info("[DEBUG] slave_shmseg->req_m_to_s = NO_REQUEST");
                     slave_shmseg->req_m_to_s = NO_REQUEST;
                     log_error("Unrecognized response for start slave cycle request received!");
                     break;
@@ -333,39 +361,7 @@ static void async_signal_handler(int signum, siginfo_t *sig_info, void *context)
     }
 }
 
-
-static int destroy_signal_semaphores() {
-    for (int i = 0; i < MAX_SLAVES; ++i) {
-        if (sem_destroy(&(self.sig_semaphore[i]))) {
-            log_error("sem_destroy() call failed!");
-            return RTC_ERROR;
-        }
-    }
-
-    return RTC_SUCCESS;
-}
-
-static int final() {
-    int ret = RTC_SUCCESS;
-
-    ret |= pthread_mutex_unlock(&self.lock_async_handler_threads);
-
-    ret |= destroy_signal_semaphores();
-    ret |= pthread_mutex_destroy(&self.lock_async_handler_threads);
-
-    // Deattach from shared memory
-    if (shmdt(self.shmp)) {
-        log_error("shmdt() call failed!");
-        ret = RTC_ERROR;
-    }
-    self.shmp = NULL;
-
-    log_info("Stopped master!");
-    closelog();
-    return ret;
-}
-
-static int init_signal_semaphores() {
+int init_signal_semaphores() {
     for (int i = 0; i < MAX_SLAVES; ++i) {
         if (sem_init(&(self.sig_semaphore[i]), 0, 0)) {
             log_error("sem_init() call failed!");
@@ -376,7 +372,7 @@ static int init_signal_semaphores() {
     return RTC_SUCCESS;
 }
 
-static int init_control_shared_memory() {
+int init_control_shared_memory() {
     int shmid;
 
     // Get existing shared memory
@@ -395,7 +391,24 @@ static int init_control_shared_memory() {
     return RTC_SUCCESS;
 }
 
-static int init_shared_memory() {
+void init_slave_shmseg_shared_memory(shmseg_t *slave_shmseg) {
+    slave_shmseg->pid = NO_PID;
+    slave_shmseg->communication_cycle_us = ERROR_NOT_SET_COMMUNICATION_CYCLE_MS;
+    slave_shmseg->req_m_to_s = NO_REQUEST;
+    slave_shmseg->req_s_to_m = NO_REQUEST;
+    slave_shmseg->res_m_to_s = NO_RESPONSE;
+    slave_shmseg->res_s_to_m = NO_RESPONSE;
+
+    for (int j = 0; j < SHMSEG_ERROR_SIZE; ++j) {
+        memset(slave_shmseg->shmseg_error[j].error_string, STRING_VALUE_UNDEFINED, STRING_SIZE);
+    }
+
+    memset(slave_shmseg->string_value, STRING_VALUE_UNDEFINED, STRING_SIZE);
+    slave_shmseg->int_value = INT_VALUE_UNDEFINED;
+    slave_shmseg->bool_value = BOOL_VALUE_UNDEFINED;
+}
+
+int init_shared_memory() {
     int shmid;
 
     // Get or create if not existing shared memory
@@ -419,27 +432,14 @@ static int init_shared_memory() {
     log_debug("Set self.shmp->master_pid to %d", self.shmp->master_pid);
 
     for (int i = 0; i < MAX_SLAVES; ++i) {
-        self.shmp->slave_shmseg[i].pid = NO_PID;
-        self.shmp->slave_shmseg[i].communication_cycle_us = ERROR_NOT_SET_COMMUNICATION_CYCLE_MS;
-        self.shmp->slave_shmseg[i].req_m_to_s = NO_REQUEST;
-        self.shmp->slave_shmseg[i].req_s_to_m = NO_REQUEST;
-        self.shmp->slave_shmseg[i].res_m_to_s = NO_RESPONSE;
-        self.shmp->slave_shmseg[i].res_s_to_m = NO_RESPONSE;
-
-        for (int j = 0; j < SHMSEG_ERROR_SIZE; ++j) {
-            memset(self.shmp->slave_shmseg[i].shmseg_error[j].error_string, STRING_VALUE_UNDEFINED, STRING_SIZE);
-        }
-
-        memset(self.shmp->slave_shmseg[i].string_value, STRING_VALUE_UNDEFINED, STRING_SIZE);
-        self.shmp->slave_shmseg[i].int_value = INT_VALUE_UNDEFINED;
-        self.shmp->slave_shmseg[i].bool_value = BOOL_VALUE_UNDEFINED;
+        init_slave_shmseg_shared_memory(&self.shmp->slave_shmseg[i]);
     }
 
     return RTC_SUCCESS;
 }
 
 // Entire process signal handler initialization
-static int init_async_signal_handler() {
+int init_async_signal_handler() {
     struct sigaction sact;
 
     // Only allow SIGUSR1 to interrupt handler execution
@@ -467,13 +467,13 @@ static int init_async_signal_handler() {
     return RTC_SUCCESS;
 }
 
-static int init() {
+int init() {
     memset(&self, 0, sizeof(master_context_t));
     
     int ret;
 
-    // openlog("master", LOG_PID | LOG_PERROR, LOG_USER);
-    openlog("master", LOG_PID, LOG_USER);
+    openlog("master", LOG_PID | LOG_PERROR, LOG_USER);
+    // openlog("master", LOG_PID, LOG_USER);
     setlogmask(LOG_UPTO(LOG_DEBUG));  // includes all logs 0,1,2 up to 7(DEBUG)
     // setlogmask(LOG_MASK(LOG_ERR) | LOG_MASK(LOG_INFO));
     log_info("Started master!");
@@ -486,6 +486,39 @@ static int init() {
 
     return RTC_SUCCESS;
 }
+
+
+int destroy_signal_semaphores() {
+    for (int i = 0; i < MAX_SLAVES; ++i) {
+        if (sem_destroy(&(self.sig_semaphore[i]))) {
+            log_error("sem_destroy() call failed!");
+            return RTC_ERROR;
+        }
+    }
+
+    return RTC_SUCCESS;
+}
+
+int final() {
+    int ret = RTC_SUCCESS;
+
+    ret |= pthread_mutex_unlock(&self.lock_async_handler_threads);
+
+    ret |= destroy_signal_semaphores();
+    ret |= pthread_mutex_destroy(&self.lock_async_handler_threads);
+
+    // Deattach from shared memory
+    if (shmdt(self.shmp)) {
+        log_error("shmdt() call failed!");
+        ret = RTC_ERROR;
+    }
+    self.shmp = NULL;
+
+    log_info("Stopped master!");
+    closelog();
+    return ret;
+}
+
 
 // Purpose of this function is to have a thread be able to receive unblocked signals to call handlers async
 static void *async_signal_handler_thread(void *ignore) {
@@ -535,7 +568,10 @@ static void *sync_signal_handler_thread(void *ignore) {
                     }
                     break;
                 case DISCONNECT_SLAVE:
-                    handle_configurator_disconnect_slave_request();
+                    if (handle_configurator_disconnect_slave_request() != RTC_SUCCESS) {
+                        // ACK response is send to configurator when ACK response received from slave
+                        send_configurator_nack_response();
+                    }
                     break;
                 case START_SLAVE_CYCLE:
                     if (handle_start_cycle_slave_request() != RTC_SUCCESS) {
@@ -607,7 +643,18 @@ int send_connect_slave_request(shmseg_t *slave_shmseg) {
     log_debug("send_connect_slave_request to process %d", slave_shmseg->pid);
     if (kill(slave_shmseg->pid, SIGUSR1)) {
         log_error("Failed to send connect slave request to process %d!", slave_shmseg->pid);
-        // TODO 9: Reset slave shared memory
+        reset_slave_shmseg(slave_shmseg);  // TODO: Stop corresponding slave processing thread
+        return RTC_ERROR;
+    }
+    return RTC_SUCCESS;
+}
+
+int send_disconnect_slave_request(shmseg_t *slave_shmseg) {
+    slave_shmseg->req_m_to_s = DISCONNECT_SLAVE;
+
+    log_debug("send_disconnect_slave_request to process %d", slave_shmseg->pid);
+    if (kill(slave_shmseg->pid, SIGUSR1)) {
+        log_error("Failed to send disconnect slave request to process %d!", slave_shmseg->pid);
         return RTC_ERROR;
     }
     return RTC_SUCCESS;
@@ -688,8 +735,8 @@ int handle_configurator_connect_slave_request() {
 }
 
 int handle_configurator_disconnect_slave_request() {
-    // TODO
-    return RTC_SUCCESS;
+    int shmsegIdx = getAssignedShmsegIdx(self.control_shmp->affected_slave_pid);
+    return send_disconnect_slave_request(&self.shmp->slave_shmseg[shmsegIdx]);
 }
 
 int handle_start_cycle_slave_request() {

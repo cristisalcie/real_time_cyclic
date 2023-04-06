@@ -48,7 +48,7 @@ void handle_signal_master_parameter_nack_response();
 void handle_signal_master_parameter_unrecognized_response();
 
 void handle_connect_slave_request();
-int handle_disconnect_slave_request();
+void handle_disconnect_slave_request();
 void handle_change_name_slave_request();
 void handle_start_cycle_slave_request();
 void handle_stop_cycle_slave_request();

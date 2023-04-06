@@ -243,7 +243,16 @@ int send_stop_cycle_slave_request(pid_t slave_pid) {
 
 int send_connect_slave_request(pid_t slave_pid) {
     self.control_shmp->affected_slave_pid = slave_pid;
-    printf("Sent request %d\n", self.control_shmp->request);
+    if (kill(self.master_pid, SIGUSR2)) {
+        fprintf(stderr, "Failed to send signal SIGUSR2 to master process %d\n", self.master_pid);
+        return RTC_ERROR;
+    }
+    return RTC_SUCCESS;
+}
+
+int send_disconnect_slave_request(pid_t slave_pid) {
+    self.control_shmp->affected_slave_pid = slave_pid;
+    printf("request is %d\n", self.control_shmp->request);
     if (kill(self.master_pid, SIGUSR2)) {
         fprintf(stderr, "Failed to send signal SIGUSR2 to master process %d\n", self.master_pid);
         return RTC_ERROR;
@@ -333,6 +342,38 @@ void wait_connect_slave_response(pid_t slave_pid) {
             printf("Connect slave request succeded!\n");
             int localIdx = getAssignedLocalIdx(slave_pid);
             self.created_slave[localIdx].connected = true;
+            break;
+        default:
+            fprintf(stderr, "Unrecognized response received!");
+            break;
+        }
+        self.control_shmp->request = NO_REQUEST;
+        self.control_shmp->response = NO_RESPONSE;
+    }
+}
+
+void wait_disconnect_slave_response(pid_t slave_pid) {
+    int err;
+    sigset_t sig_set;
+    siginfo_t sig_info;
+    struct timespec timeout = { .tv_sec = WAIT_TIMEOUT_SECONDS };
+
+    sigemptyset(&sig_set);
+    sigaddset(&sig_set, SIGUSR2);
+
+    err = sigtimedwait(&sig_set, &sig_info, &timeout);
+    if (err == -1) {
+        perror("sigtimedwait() call failed in wait_disconnect_slave_response()!");
+    } else {
+        switch (self.control_shmp->response)
+        {
+        case NACK:
+            printf("Disconnect slave request failed!\n");
+            break;
+        case ACK:
+            printf("Disconnect slave request succeded!\n");
+            int localIdx = getAssignedLocalIdx(slave_pid);
+            self.created_slave[localIdx].connected = false;
             break;
         default:
             fprintf(stderr, "Unrecognized response received!");
@@ -526,7 +567,55 @@ int main(int argc, char *argv[]) {
             break;
         }
         case DISCONNECT_SLAVE:
-            printf("TODO: Disconnect slave\n");
+        {
+            int connected_pids_iter = 0;
+            pid_t connected_pids[MAX_SLAVES];
+            pid_t slave_pid;
+            bool valid_pid = false;
+
+            // Inform user of available connected slave pids
+            printf("Available connected and not started slave pids: ");
+            for (int i = 0; i < MAX_SLAVES; ++i) {
+                if (self.shmp->slave_shmseg[i].is_connected && !self.shmp->slave_shmseg[i].cycle_started) {
+                    printf("%d ", self.shmp->slave_shmseg[i].pid);
+                    connected_pids[connected_pids_iter] = self.shmp->slave_shmseg[i].pid;
+                    ++connected_pids_iter;
+                }
+            }
+            printf("\n");
+            printf("Insert slave pid to disconnect: ");
+            {
+                size_t read_characters;
+                size_t line_length = MAX_LINE_LENGTH;
+                char *line = (char*)calloc(MAX_LINE_LENGTH, sizeof(char));
+
+                read_characters = getline(&line, &line_length, stdin);
+
+                if (read_characters < 1 || line[0] < '0' || line[0] > '9') {
+                    fprintf(stderr, "Invalid process id!\n");
+                    free(line);
+                    break;
+                }
+
+                sscanf(line, "%d", &slave_pid);
+                free(line);
+            }
+            printf("\n");
+
+            for (int i = 0; i < connected_pids_iter; ++i) {
+                if (slave_pid == connected_pids[i]) {
+                    valid_pid = true;
+                    break;
+                }
+            }
+            if (!valid_pid) {
+                printf("Not a valid slave pid!\n");
+                break;
+            }
+
+            send_disconnect_slave_request(slave_pid);
+            wait_disconnect_slave_response(slave_pid);
+        }
             break;
         case START_SLAVE_CYCLE:
         {
@@ -768,8 +857,8 @@ int main(int argc, char *argv[]) {
             char slave_name[] = "asd";
             char available_parameters[] = "111";
             char requested_parameters[] = "010";
-            // int communication_cycle_us = 1750 * 1000;
-            int communication_cycle_us = 500 * 1000;
+            int communication_cycle_us = 1750 * 1000;
+            // int communication_cycle_us = 500 * 1000;
 
             printf("Insert number of extra slaves to test application with: ");
             {

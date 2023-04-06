@@ -451,9 +451,12 @@ void handle_connect_slave_request() {
     send_master_ack_response();
 }
 
-int handle_disconnect_slave_request() {
-    // TODO
-    return RTC_SUCCESS;
+void handle_disconnect_slave_request() {
+    self.last_communication_timeval.tv_sec = 0;
+    self.last_communication_timeval.tv_usec = 0;
+    self.excess_communication_cycle_interval_ms = 0;
+    send_master_ack_response();
+    self.shmseg = NULL;
 }
 
 void handle_change_name_slave_request() {

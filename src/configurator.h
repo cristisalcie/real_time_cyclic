@@ -24,10 +24,12 @@ typedef struct configurator_context_s {
 int send_start_cycle_slave_request(pid_t slave_pid);
 int send_stop_cycle_slave_request(pid_t slave_pid);
 int send_connect_slave_request(pid_t slave_pid);
+int send_disconnect_slave_request(pid_t slave_pid);
 
 void wait_start_slave_cycle_response();
 void wait_stop_slave_cycle_response();
 void wait_connect_slave_response(pid_t slave_pid);
+void wait_disconnect_slave_response(pid_t slave_pid);
 int wait_master_started_signal();
 
 #endif /* CONFIGURATOR_H */
