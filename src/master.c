@@ -275,7 +275,7 @@ static void *slave_processor_detached_thread(void *data) {
                     slave_shmseg->req_m_to_s = NO_REQUEST;
                     log_debug("slave_shmseg->req_m_to_s = NO_REQUEST");
 
-                    // TODO: Disconnect slave!
+                    // TODO: Disconnect slave? This case should not happen
                     send_configurator_nack_response();
 
                     break;
@@ -558,9 +558,6 @@ static void *sync_signal_handler_thread(void *ignore) {
                 case STOP_MASTER:
                     handle_configurator_stop_master_request();
                     break;
-                case DELETE_SLAVE:
-                    handle_configurator_delete_slave_request();
-                    break;
                 case CONNECT_SLAVE:
                     if (handle_configurator_connect_slave_request() != RTC_SUCCESS) {
                         // ACK response is send to configurator when ACK response received from slave
@@ -586,7 +583,7 @@ static void *sync_signal_handler_thread(void *ignore) {
                     }
                     break;
                 default:
-                    log_error("Received unknown command from configurator process %d", self.control_shmp->configurator_pid);
+                    log_error("Received unknown command(%d) from configurator process %d", self.control_shmp->request, self.control_shmp->configurator_pid);
                     break;
                 }
             }
@@ -715,12 +712,7 @@ void handle_slave_request_errors(shmseg_t *slave_shmseg) {
 }
 
 int handle_configurator_stop_master_request() {
-    // TODO
-    return RTC_SUCCESS;
-}
-
-int handle_configurator_delete_slave_request() {
-    // TODO
+    // TODO: Improve stop master request
     return RTC_SUCCESS;
 }
 

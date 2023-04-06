@@ -21,8 +21,10 @@ typedef struct configurator_context_s {
     created_slave_t created_slave[MAX_SLAVES];
 } configurator_context_t;
 
+int send_stop_master_request();
 int send_start_cycle_slave_request(pid_t slave_pid);
 int send_stop_cycle_slave_request(pid_t slave_pid);
+int send_delete_slave_request(pid_t slave_pid);
 int send_connect_slave_request(pid_t slave_pid);
 int send_disconnect_slave_request(pid_t slave_pid);
 

@@ -223,6 +223,16 @@ static int final() {
     return ret;
 }
 
+int send_stop_master_request() {
+    // TODO: Improve to use SIGUSR2 and wait for response.
+    if (kill(self.master_pid, SIGINT)) {
+        fprintf(stderr, "Failed to send signal SIGINT to master process %d\n", self.master_pid);
+        return RTC_ERROR;
+    }
+    self.master_pid = NO_PID;
+    return RTC_SUCCESS;
+}
+
 int send_start_cycle_slave_request(pid_t slave_pid) {
     self.control_shmp->affected_slave_pid = slave_pid;
     if (kill(self.master_pid, SIGUSR2)) {
@@ -236,6 +246,15 @@ int send_stop_cycle_slave_request(pid_t slave_pid) {
     self.control_shmp->affected_slave_pid = slave_pid;
     if (kill(self.master_pid, SIGUSR2)) {
         fprintf(stderr, "Failed to send signal SIGUSR2 to master process %d\n", self.master_pid);
+        return RTC_ERROR;
+    }
+    return RTC_SUCCESS;
+}
+
+int send_delete_slave_request(pid_t slave_pid) {
+    // TODO: Improve to use SIGUSR1 and wait for response.
+    if (kill(slave_pid, SIGINT)) {
+        fprintf(stderr, "Failed to send signal SIGINT to slave process %d\n", slave_pid);
         return RTC_ERROR;
     }
     return RTC_SUCCESS;
@@ -361,6 +380,10 @@ void wait_disconnect_slave_response(pid_t slave_pid) {
     sigemptyset(&sig_set);
     sigaddset(&sig_set, SIGUSR2);
 
+    /* TODO: KNOWN BUG: this sigtimedwait() has 1 signal waiting in queue which will
+     * create have master respond with unknown request since configurator races faster
+     * to setting it to NO_REQUEST.
+     */
     err = sigtimedwait(&sig_set, &sig_info, &timeout);
     if (err == -1) {
         perror("sigtimedwait() call failed in wait_disconnect_slave_response()!");
@@ -414,6 +437,8 @@ int main(int argc, char *argv[]) {
         self.created_slave[i].pid = NO_PID;
     }
 
+    self.master_pid = NO_PID;
+
     if ((ret = block_signals()) != RTC_SUCCESS) return ret;
     if ((ret = init_control_shared_memory()) != RTC_SUCCESS) return ret;
 
@@ -443,7 +468,28 @@ int main(int argc, char *argv[]) {
             break;
         }
         case STOP_MASTER:
-            printf("TODO: Stop master\n");
+            // TODO: Improve this
+            if (self.master_pid == NO_PID) {
+                printf("Master not started!\n");
+                break;
+            }
+
+            // Kill all slaves using SIGINT signal
+            for (int i = 0; i < MAX_SLAVES; ++i) {
+                if (self.shmp->slave_shmseg[i].pid == NO_PID) continue;
+
+                send_delete_slave_request(self.shmp->slave_shmseg[i].pid);
+
+                int localIdx = getAssignedLocalIdx(self.shmp->slave_shmseg[i].pid);
+                self.created_slave[localIdx].pid = NO_PID;
+                self.created_slave[localIdx].connected = false;
+            }
+
+            // Kill master using SIGINT signal
+            if (send_stop_master_request()) {
+                // Failed to send stop master request
+                break;
+            }
             break;
         case CREATE_SLAVE:
         {
@@ -523,11 +569,11 @@ int main(int argc, char *argv[]) {
             break;
         }
         case DELETE_SLAVE:
-            printf("TODO: Delete slave\n");
-            break;
-        case CONNECT_SLAVE:
         {
+            int connected_pids_iter = 0;
+            pid_t connected_pids[MAX_SLAVES];
             pid_t slave_pid;
+            bool valid_pid = false;
 
             printf("Disconnected slave pids: ");
             for (int i = 0; i < MAX_SLAVES; ++i) {
@@ -535,6 +581,67 @@ int main(int argc, char *argv[]) {
 
                 if (!self.created_slave[i].connected) {
                     printf("%d ", self.created_slave[i].pid);
+                    connected_pids[connected_pids_iter] = self.created_slave[i].pid;
+                    ++connected_pids_iter;
+                }
+            }
+            printf("\n");
+            printf("Insert slave pid to delete: ");
+
+            {
+                size_t read_characters;
+                size_t line_length = MAX_LINE_LENGTH;
+                char *line = (char*)calloc(MAX_LINE_LENGTH, sizeof(char));
+
+                read_characters = getline(&line, &line_length, stdin);
+
+                if (read_characters < 1 || line[0] < '0' || line[0] > '9') {
+                    fprintf(stderr, "Invalid process id!\n");
+                    free(line);
+                    break;
+                }
+
+                sscanf(line, "%d", &slave_pid);
+                free(line);
+            }
+            printf("\n");
+
+            for (int i = 0; i < connected_pids_iter; ++i) {
+                if (slave_pid == connected_pids[i]) {
+                    valid_pid = true;
+                    break;
+                }
+            }
+            if (!valid_pid) {
+                printf("Not a valid slave pid!\n");
+                break;
+            }
+
+
+            if (send_delete_slave_request(slave_pid)) {
+                // Failed to send delete request
+                break;
+            }
+            int localIdx = getAssignedLocalIdx(slave_pid);
+            self.created_slave[localIdx].pid = NO_PID;
+            self.created_slave[localIdx].connected = false;
+        }
+            break;
+        case CONNECT_SLAVE:
+        {
+            int connected_pids_iter = 0;
+            pid_t connected_pids[MAX_SLAVES];
+            pid_t slave_pid;
+            bool valid_pid = false;
+
+            printf("Disconnected slave pids: ");
+            for (int i = 0; i < MAX_SLAVES; ++i) {
+                if (self.created_slave[i].pid == NO_PID) continue;
+
+                if (!self.created_slave[i].connected) {
+                    printf("%d ", self.created_slave[i].pid);
+                    connected_pids[connected_pids_iter] = self.created_slave[i].pid;
+                    ++connected_pids_iter;
                 }
             }
             printf("\n");
@@ -557,6 +664,18 @@ int main(int argc, char *argv[]) {
                 free(line);
             }
             printf("\n");
+
+            for (int i = 0; i < connected_pids_iter; ++i) {
+                if (slave_pid == connected_pids[i]) {
+                    valid_pid = true;
+                    break;
+                }
+            }
+            if (!valid_pid) {
+                printf("Not a valid slave pid!\n");
+                break;
+            }
+
 
             if (send_connect_slave_request(slave_pid)) {
                 // Failed to send connect request

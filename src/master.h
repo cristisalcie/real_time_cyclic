@@ -61,7 +61,6 @@ int send_stop_cycle_slave_request();
 
 void handle_slave_request_errors(shmseg_t *slave_shmseg);
 int handle_configurator_stop_master_request();
-int handle_configurator_delete_slave_request();
 int handle_configurator_connect_slave_request();
 int handle_configurator_disconnect_slave_request();
 int handle_start_cycle_slave_request();

@@ -31,9 +31,9 @@
 
 typedef enum {
     START_MASTER,
-    STOP_MASTER,        // TODO
+    STOP_MASTER,        // TODO: Improve in the future
     CREATE_SLAVE,
-    DELETE_SLAVE,       // TODO
+    DELETE_SLAVE,       // TODO: Improve in the future
     CONNECT_SLAVE,
     DISCONNECT_SLAVE,
     START_SLAVE_CYCLE,
