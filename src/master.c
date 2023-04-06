@@ -147,10 +147,8 @@ static void *slave_processor_detached_thread(void *data) {
                     }
                 }
 
-                slave_shmseg->res_m_to_s = ACK;
-                if (kill(slave_shmseg->pid, SIGUSR1)) {
-                    log_error("Failed to send ACK signal for SIGNAL_MASTER_PARAMETER to slave process %d!", slave_shmseg->pid);
-                }
+                send_slave_ack_response(slave_shmseg);
+
                 continue;
             case NO_REQUEST:
                 // Did not receive a request from slave! Continue checking if received response from slave
@@ -173,10 +171,7 @@ static void *slave_processor_detached_thread(void *data) {
                     log_info("[DEBUG] slave_shmseg->req_m_to_s = NO_REQUEST");
 
                     // Forward response to configurator
-                    self.control_shmp->response = NACK;
-                    if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
-                        log_error("Failed to send NACK signal to configurator!");
-                    }
+                    send_configurator_nack_response();
 
                     break;
                 case ACK:
@@ -185,11 +180,7 @@ static void *slave_processor_detached_thread(void *data) {
                     slave_shmseg->req_m_to_s = NO_REQUEST;
 
                     // Forward response to configurator
-                    log_debug("SENT RESPONSE TO CONFIGURATOR TO START_SLAVE_CYCLE/STOP_SLAVE_CYCLE ACK RESPONSE");
-                    self.control_shmp->response = ACK;
-                    if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
-                        log_error("Failed to send ACK signal to configurator!");
-                    }
+                    send_configurator_ack_response();
 
                     break;
                 default:
@@ -216,10 +207,8 @@ static void *slave_processor_detached_thread(void *data) {
                     slave_shmseg->res_s_to_m = NO_RESPONSE;
                     log_debug("slave_shmseg->res_s_to_m = NO_RESPONSE");
 
-                    self.control_shmp->response = NACK;
-                    if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
-                        log_error("Failed to send NACK signal to configurator!");
-                    }
+                    send_configurator_nack_response();
+
                     slave_shmseg->req_m_to_s = NO_REQUEST;
                     log_debug("slave_shmseg->req_m_to_s = NO_REQUEST");
                     break;
@@ -233,10 +222,7 @@ static void *slave_processor_detached_thread(void *data) {
                         slave_shmseg->is_connected = true;
                         slave_shmseg->req_m_to_s = NO_REQUEST;
                         log_debug("slave_shmseg->req_m_to_s = NO_REQUEST");
-                        self.control_shmp->response = ACK;
-                        if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
-                            log_error("Failed to send ACK signal to configurator!");
-                        }
+                        send_configurator_ack_response();
                     }
 
                     break;
@@ -246,10 +232,7 @@ static void *slave_processor_detached_thread(void *data) {
                     log_error("Unrecognized command from process %d, continuing...", slave_pid);
                     slave_shmseg->req_m_to_s = NO_REQUEST;
                     log_debug("slave_shmseg->req_m_to_s = NO_REQUEST");
-                    self.control_shmp->response = NACK;
-                    if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
-                        log_error("Failed to send NACK signal to configurator!");
-                    }
+                    send_configurator_nack_response();
                     break;
                 }
                 break;
@@ -265,10 +248,7 @@ static void *slave_processor_detached_thread(void *data) {
                     log_debug("slave_shmseg->req_m_to_s = NO_REQUEST");
 
                     // TODO: Disconnect slave!
-                    self.control_shmp->response = NACK;
-                    if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
-                        log_error("Failed to send NACK signal to configurator!");
-                    }
+                    send_configurator_nack_response();
 
                     break;
                 case ACK:
@@ -283,10 +263,7 @@ static void *slave_processor_detached_thread(void *data) {
                         log_debug("slave_shmseg->req_m_to_s = NO_REQUEST");
                         slave_shmseg->req_m_to_s = NO_REQUEST;
 
-                        self.control_shmp->response = ACK;
-                        if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
-                            log_error("Failed to send ACK signal to configurator!");
-                        }
+                        send_configurator_ack_response();
                     }
                     break;
                 
@@ -554,10 +531,7 @@ static void *sync_signal_handler_thread(void *ignore) {
                 case CONNECT_SLAVE:
                     if (handle_configurator_connect_slave_request() != RTC_SUCCESS) {
                         // ACK response is send to configurator when ACK response received from slave
-                        self.control_shmp->response = NACK;
-                        if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
-                            log_error("Failed to send NACK signal to configurator!");
-                        }
+                        send_configurator_nack_response();
                     }
                     break;
                 case DISCONNECT_SLAVE:
@@ -566,19 +540,13 @@ static void *sync_signal_handler_thread(void *ignore) {
                 case START_SLAVE_CYCLE:
                     if (handle_start_cycle_slave_request() != RTC_SUCCESS) {
                         // ACK response is send to configurator when ACK response received from slave
-                        self.control_shmp->response = NACK;
-                        if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
-                            log_error("Failed to send NACK signal to configurator!");
-                        }
+                        send_configurator_nack_response();
                     }
                     break;
                 case STOP_SLAVE_CYCLE:
                     if (handle_stop_cycle_slave_request() != RTC_SUCCESS) {
                         // ACK response is send to configurator when ACK response received from slave
-                        self.control_shmp->response = NACK;
-                        if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
-                            log_error("Failed to send NACK signal to configurator!");
-                        }
+                        send_configurator_nack_response();
                     }
                     break;
                 default:
@@ -591,6 +559,34 @@ static void *sync_signal_handler_thread(void *ignore) {
     return NULL;
 }
 
+
+void send_configurator_ack_response() {
+    self.control_shmp->response = ACK;
+    if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
+        log_error("Failed to send NACK signal to configurator!");
+    }
+}
+
+void send_configurator_nack_response() {
+    self.control_shmp->response = NACK;
+    if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
+        log_error("Failed to send NACK signal to configurator!");
+    }
+}
+
+void send_slave_ack_response(shmseg_t *slave_shmseg) {
+    slave_shmseg->res_m_to_s = ACK;
+    if (kill(slave_shmseg->pid, SIGUSR1)) {
+        log_error("Failed to send ACK signal for SIGNAL_MASTER_PARAMETER to slave process %d!", slave_shmseg->pid);
+    }
+}
+
+void send_slave_nack_response(shmseg_t *slave_shmseg) {
+    slave_shmseg->res_m_to_s = NACK;
+    if (kill(slave_shmseg->pid, SIGUSR1)) {
+        log_error("Failed to send ACK signal for SIGNAL_MASTER_PARAMETER to slave process %d!", slave_shmseg->pid);
+    }
+}
 
 int send_change_name_slave_request(int shmsegIdx) {
     pid_t slave_pid = self.shmp->slave_shmseg[shmsegIdx].pid;
@@ -724,7 +720,7 @@ int main(int argc, char *argv[]) {
         return RTC_ERROR;
     }
 
-    // Full initialization complete, send response to configurator
+    // Full initialization complete, send signal to configurator
     if (kill(self.control_shmp->configurator_pid, SIGUSR2)) {
         log_error("Failed to send initialization complete response to configurator!");
         return RTC_ERROR;
