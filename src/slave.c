@@ -124,7 +124,7 @@ static void *slave_communication_cycle_detached_thread(void *ignore) {
 
         send_master_signal_master_parameter_request();
 
-        sleep_us -= wait_master_signal_master_parameter_response();
+        sleep_us = self.shmseg->communication_cycle_us - wait_master_signal_master_parameter_response();
     }
 
     return NULL;
