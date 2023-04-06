@@ -25,8 +25,9 @@
 #define BOOL_VALUE_UNDEFINED -1
 
 #define WAIT_TIMEOUT_SECONDS 3
-#define COMMUNICATION_CYCLE_THRESHOLD_US 2500
-#define NOT_SET_ERROR_COMMUNICATION_CYCLE_MS -1
+#define ERROR_NOT_SET_COMMUNICATION_CYCLE_MS -1
+
+#define SHMSEG_ERROR_SIZE 20
 
 typedef enum {
     START_MASTER,
@@ -52,6 +53,10 @@ typedef enum {
     RESPONSE_SIZE
 } response_t;
 
+typedef struct shmseg_error_s {
+    char error_string[STRING_SIZE];
+} shmseg_error_t;
+
 typedef struct shmseg_s {
     // Fields modifiable only by slaves
     char name[SLAVE_NAME_SIZE];  // Name string can't contain spaces
@@ -73,7 +78,8 @@ typedef struct shmseg_s {
     // Slave sets them, master reads and resets them to a DEFINE value in order for master to know
     // whether requested parameters got sent in next the cycle.
     bool cycle_started;
-    char error_string[STRING_SIZE];  // Slave sets, Master resets
+    shmseg_error_t shmseg_error[SHMSEG_ERROR_SIZE];  // Slave sets, Master resets when consumed
+    u_int16_t shmseg_error_current_size;
     char string_value[STRING_SIZE];
     int int_value;
     bool bool_value;

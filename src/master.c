@@ -72,10 +72,7 @@ static bool must_change_name(int shmsegIdx) {
 }
 
 static bool slave_request_has_errors(shmseg_t *slave_shmseg) {
-    if (slave_shmseg->error_string[0]) {
-        return true;
-    }
-    return false;
+    return slave_shmseg->shmseg_error_current_size;
 }
 
 static void *slave_processor_detached_thread(void *data) {
@@ -109,14 +106,14 @@ static void *slave_processor_detached_thread(void *data) {
             return NULL;
         }
 
+        if (slave_request_has_errors(slave_shmseg)) {
+            handle_slave_request_errors(slave_shmseg);
+        }
+
         if (slave_shmseg->is_connected) {
             switch (slave_shmseg->req_s_to_m)
             {
             case SIGNAL_MASTER_PARAMETER:
-                if (slave_request_has_errors(slave_shmseg)) {
-                    handle_slave_request_errors(slave_shmseg);
-                }
-
                 if (slave_shmseg->requested_parameters & STRING_PARAMETER_BIT) {
                     if (slave_shmseg->string_value[0] == STRING_VALUE_UNDEFINED) {
                         log_error("Did not receive requested string parameter from slave process [%d]!",
@@ -446,12 +443,16 @@ static int init_shared_memory() {
 
     for (int i = 0; i < MAX_SLAVES; ++i) {
         self.shmp->slave_shmseg[i].pid = NO_PID;
-        self.shmp->slave_shmseg[i].communication_cycle_us = NOT_SET_ERROR_COMMUNICATION_CYCLE_MS;
+        self.shmp->slave_shmseg[i].communication_cycle_us = ERROR_NOT_SET_COMMUNICATION_CYCLE_MS;
         self.shmp->slave_shmseg[i].req_m_to_s = NO_REQUEST;
         self.shmp->slave_shmseg[i].req_s_to_m = NO_REQUEST;
         self.shmp->slave_shmseg[i].res_m_to_s = NO_RESPONSE;
         self.shmp->slave_shmseg[i].res_s_to_m = NO_RESPONSE;
-        memset(self.shmp->slave_shmseg[i].error_string, STRING_VALUE_UNDEFINED, STRING_SIZE);
+
+        for (int j = 0; j < SHMSEG_ERROR_SIZE; ++j) {
+            memset(self.shmp->slave_shmseg[i].shmseg_error[j].error_string, STRING_VALUE_UNDEFINED, STRING_SIZE);
+        }
+
         memset(self.shmp->slave_shmseg[i].string_value, STRING_VALUE_UNDEFINED, STRING_SIZE);
         self.shmp->slave_shmseg[i].int_value = INT_VALUE_UNDEFINED;
         self.shmp->slave_shmseg[i].bool_value = BOOL_VALUE_UNDEFINED;
@@ -621,20 +622,20 @@ int send_start_cycle_slave_request() {
 
     int shmsegIdx = getAssignedShmsegIdx(slave_pid);
     if (shmsegIdx == NO_IDX) {
-        // log_debug("Process %d has no assigned index!", slave_pid);
+        log_debug("Process %d has no assigned index!", slave_pid);
         return RTC_ERROR;
     }
 
-    if (self.shmp->slave_shmseg[shmsegIdx].communication_cycle_us == NOT_SET_ERROR_COMMUNICATION_CYCLE_MS) {
-        // log_error("Process %d has not been set communication cycle variable!", slave_pid);
+    if (self.shmp->slave_shmseg[shmsegIdx].communication_cycle_us == ERROR_NOT_SET_COMMUNICATION_CYCLE_MS) {
+        log_error("Process %d has not been set communication cycle variable!", slave_pid);
         return RTC_ERROR;
     }
 
     self.shmp->slave_shmseg[shmsegIdx].req_m_to_s = START_SLAVE_CYCLE;
 
-    // log_debug("send_start_cycle_slave_request to process %d", slave_pid);
+    log_debug("send_start_cycle_slave_request to process %d", slave_pid);
     if (kill(slave_pid, SIGUSR1)) {
-        // log_error("Failed to send start cycle slave request to process %d!", slave_pid);
+        log_error("Failed to send start cycle slave request to process %d!", slave_pid);
         return RTC_ERROR;
     }
     return RTC_SUCCESS;
@@ -645,15 +646,15 @@ int send_stop_cycle_slave_request() {
 
     int shmsegIdx = getAssignedShmsegIdx(slave_pid);
     if (shmsegIdx == NO_IDX) {
-        // log_debug("Process %d has no assigned index!", slave_pid);
+        log_debug("Process %d has no assigned index!", slave_pid);
         return RTC_ERROR;
     }
 
     self.shmp->slave_shmseg[shmsegIdx].req_m_to_s = STOP_SLAVE_CYCLE;
 
-    // log_debug("send_stop_cycle_slave_request to process %d", slave_pid);
+    log_debug("send_stop_cycle_slave_request to process %d", slave_pid);
     if (kill(slave_pid, SIGUSR1)) {
-        // log_error("Failed to send stop cycle slave request to process %d!", slave_pid);
+        log_error("Failed to send stop cycle slave request to process %d!", slave_pid);
         return RTC_ERROR;
     }
     return RTC_SUCCESS;
@@ -661,10 +662,13 @@ int send_stop_cycle_slave_request() {
 
 
 void handle_slave_request_errors(shmseg_t *slave_shmseg) {
-    log_error("Received from slave process [%d]: %s",
-        slave_shmseg->pid,
-        slave_shmseg->error_string);
-    memset(slave_shmseg->error_string, STRING_VALUE_UNDEFINED, STRING_SIZE);
+    for (int i = 0; i < slave_shmseg->shmseg_error_current_size; ++i) {
+        log_error("Received from slave process [%d]: %s",
+            slave_shmseg->pid,
+            slave_shmseg->shmseg_error[i].error_string);
+        memset(slave_shmseg->shmseg_error[i].error_string, STRING_VALUE_UNDEFINED, STRING_SIZE);
+    }
+    slave_shmseg->shmseg_error_current_size = 0;
 }
 
 int handle_configurator_stop_master_request() {

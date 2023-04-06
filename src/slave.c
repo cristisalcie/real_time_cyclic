@@ -56,21 +56,23 @@ static void calculate_parameter_communication_interval() {
     long int elapsed_seconds_in_us = (current_timeval.tv_sec - self.last_communication_timeval.tv_sec) * 1000000l;
     long int elapsed_microseconds = elapsed_seconds_in_us + current_timeval.tv_usec - self.last_communication_timeval.tv_usec;
 
-    long int communication_cycle_us = elapsed_microseconds - self.shmp->slave_shmseg[self.shmsegIdx].communication_cycle_us;
+    long int communication_cycle_us = elapsed_microseconds - self.shmseg->communication_cycle_us;
 
     self.excess_communication_cycle_interval_ms = communication_cycle_us / 1000.0;
 
     self.last_communication_timeval.tv_sec = current_timeval.tv_sec;
     self.last_communication_timeval.tv_usec = current_timeval.tv_usec;
 
-    if (self.excess_communication_cycle_interval_ms > COMMUNICATION_CYCLE_THRESHOLD_US / 1000.0) {
-        sprintf(self.shmp->slave_shmseg[self.shmsegIdx].error_string,
-            "Exceeded communication cycle set time by %lf miliseconds",
-            self.excess_communication_cycle_interval_ms);
+    if (self.excess_communication_cycle_interval_ms > self.shmseg->communication_cycle_us / 2000.0) {
+        // Exceeded half of communication cycle
+        set_error("Exceeded communication cycle set time by %lf miliseconds", self.excess_communication_cycle_interval_ms);
     }
 }
 
+
 static void *slave_communication_cycle_detached_thread(void *ignore) {
+    long int sleep_us = ERROR_NOT_SET_COMMUNICATION_CYCLE_MS;
+
     while (true) {
         fprintf(stderr, "[DEBUG %d] waiting to send cycle data\n", getpid());
 
@@ -79,62 +81,55 @@ static void *slave_communication_cycle_detached_thread(void *ignore) {
             return NULL;
         }
 
-        if (self.shmp->slave_shmseg[self.shmsegIdx].communication_cycle_us == NOT_SET_ERROR_COMMUNICATION_CYCLE_MS) {
-            // TODO (already done in master)
+        if (self.shmseg->communication_cycle_us == ERROR_NOT_SET_COMMUNICATION_CYCLE_MS) {
+            // NOTE: (already done in master)
         }
 
-        if (usleep(self.shmp->slave_shmseg[self.shmsegIdx].communication_cycle_us)) {
-            fprintf(stderr, "usleep() failed! Communication cycle thread killed!\n");
-            break;
+        if (sleep_us == ERROR_NOT_SET_COMMUNICATION_CYCLE_MS) {
+            sleep_us = self.shmseg->communication_cycle_us;
+        }
+
+        if (sleep_us > 0) {
+            if (usleep(sleep_us)) {
+                // Set error and continue normally
+                set_error("usleep() failed!");
+                continue;
+            }
         }
 
         int rand_value = rand();
-        if (self.shmp->slave_shmseg[self.shmsegIdx].requested_parameters & STRING_PARAMETER_BIT) {
+        if (self.shmseg->requested_parameters & STRING_PARAMETER_BIT) {
             char chr_rand = 'A' + rand_value % ('Z' - 'A' + 1) ;
-            self.shmp->slave_shmseg[self.shmsegIdx].string_value[0] = chr_rand;
-            self.shmp->slave_shmseg[self.shmsegIdx].string_value[1] = chr_rand + 1;
-            self.shmp->slave_shmseg[self.shmsegIdx].string_value[2] = chr_rand + 2;
+            self.shmseg->string_value[0] = chr_rand;
+            self.shmseg->string_value[1] = chr_rand + 1;
+            self.shmseg->string_value[2] = chr_rand + 2;
         }
-        if (self.shmp->slave_shmseg[self.shmsegIdx].requested_parameters & INT_PARAMETER_BIT) {
-            self.shmp->slave_shmseg[self.shmsegIdx].int_value = rand_value;
+        if (self.shmseg->requested_parameters & INT_PARAMETER_BIT) {
+            self.shmseg->int_value = rand_value;
         }
-        if (self.shmp->slave_shmseg[self.shmsegIdx].requested_parameters & BOOL_PARAMETER_BIT) {
-            self.shmp->slave_shmseg[self.shmsegIdx].bool_value = rand_value % 2;
+        if (self.shmseg->requested_parameters & BOOL_PARAMETER_BIT) {
+            self.shmseg->bool_value = rand_value % 2;
         }
 
         calculate_parameter_communication_interval();
 
-        fprintf(stderr, "[DEBUG %d] Sent data request to master\n", getpid());
-        self.shmp->slave_shmseg[self.shmsegIdx].req_s_to_m = SIGNAL_MASTER_PARAMETER;
-        if (kill(self.shmp->master_pid, SIGUSR1)) {
-            fprintf(stderr, "Failed to send \"signal master parameter\" signal to master!\n");
-        }
 
         if (sem_post(&self.allow_communication_cycle)) {
-            fprintf(stderr, "sem_post() call failed!\n");
+            set_error("sem_post() call failed on self.allow_communication_cycle! Stopping communication cycle");
+            self.shmseg->cycle_started = false;
         }
+        /* handle_stop_communication_cycle can now sem_wait on allow_communication_cycle allowing
+         * signal_handler_thread to unlock itself and process master response
+         */
 
-        // handle_stop_communication_cycle can now sem_wait on allow_communication_cycle allowing
-        // signal_handler_thread to unlock itself and process master response
+        send_master_signal_master_parameter_request();
 
-        int threshold = 0;
-        while (sem_trywait(&self.master_processed_communication_cycle)) {
-            usleep(self.shmp->slave_shmseg[self.shmsegIdx].communication_cycle_us / 10);
-
-            if (threshold >= 20) {
-                fprintf(stderr, "[%d] master failed to respond to request!\n", getpid());
-                // TODO: Send to master error.
-                break;
-            }
-
-            ++threshold;
-            // return NULL;
-        }
-        printf("[DEBUG %d] master_processed_communication_cycle, threshold = %d >= 20 ?\n", getpid(), threshold);
+        sleep_us -= wait_master_signal_master_parameter_response();
     }
 
     return NULL;
 }
+
 
 static int create_communication_cycle_detached_thread() {
     pthread_t tid;
@@ -161,6 +156,22 @@ static int create_communication_cycle_detached_thread() {
 
     return RTC_SUCCESS;
 }
+
+static int first_signal_ever_setup() {
+    if (self.shmseg == NULL) {
+        // First time getting shared memory index.
+        int shmsegIdx = getAssignedShmsegIdx(getpid());
+        if (shmsegIdx == NO_IDX) {
+            // Process has not been assigned a shared memory segment yet.
+            fprintf(stderr, "Process %d has no assigned shared memory index, continuing...\n", getpid());
+            // Ignore since there is no variable to write error in
+            return RTC_ERROR;
+        }
+        self.shmseg = &self.shmp->slave_shmseg[shmsegIdx];
+    }
+    return RTC_SUCCESS;
+}
+
 
 static int destroy_allow_communication_cycle_semaphore() {
     if (sem_destroy(&self.allow_communication_cycle)) {
@@ -195,6 +206,7 @@ static int final() {
 
     return ret;
 }
+
 
 static int init_allow_communication_cycle_semaphore() {
     if (sem_init(&self.allow_communication_cycle, 0, 0)) {
@@ -231,8 +243,6 @@ static int init_shared_memory() {
         fprintf(stderr, "shmmat() call failed to attach to shared memory!\n");
         return RTC_ERROR;
     }
-
-    self.shmsegIdx = NO_IDX;
 
     return RTC_SUCCESS;
 }
@@ -280,71 +290,48 @@ static void *signal_handler_thread(void *ignore) {
             fprintf(stderr, "sigwaitinfo() call failed!\n");
         } else {
             if (sig_info.si_pid != self.shmp->master_pid) {
-                fprintf(stderr, "Received signal from process %d. Only accepting signals from master process %d, continuing...\n", sig_info.si_pid, self.shmp->master_pid);
-                // TODO 0?: Send to master error message
+                fprintf(stderr, "Received signal from process %d."
+                    " Only accepting signals from master process %d, continuing...\n",
+                    sig_info.si_pid, self.shmp->master_pid);
+                // Ignore and move on
                 continue;
             }
             
             if (sig_info.si_signo == SIGUSR1) {
-                if (self.shmsegIdx == NO_IDX) {
-                    // First time getting shared memory index.
-                    self.shmsegIdx = getAssignedShmsegIdx(getpid());
-                    if (self.shmsegIdx == NO_IDX) {
-                        // Process has not been assigned a shared memory segment yet.
-                        // TODO 0?: Send NACK to master with error message
-                        fprintf(stderr, "Process %d has no assigned shared memory index, continuing...\n", getpid());
-                        continue;
-                    }
+                if (first_signal_ever_setup() != RTC_SUCCESS) {
+                    continue;
                 }
 
-
-                switch (self.shmp->slave_shmseg[self.shmsegIdx].req_s_to_m)
+                switch (self.shmseg->req_s_to_m)
                 {
                 case SIGNAL_MASTER_PARAMETER:
-                    switch (self.shmp->slave_shmseg[self.shmsegIdx].res_m_to_s)
+                    switch (self.shmseg->res_m_to_s)
                     {
                     case ACK:
-                        // Master processed, allow slave to process and send again
-                        if (sem_post(&self.master_processed_communication_cycle)) {
-                            fprintf(stderr, "sem_post() call failed, continuing...\n");
-                            continue;
-                        }
-                        fprintf(stderr, "[DEBUG %d] received ACK for processing new parameter cycle.\n", getpid());
-                        self.shmp->slave_shmseg[self.shmsegIdx].req_s_to_m = NO_REQUEST;
-                        self.shmp->slave_shmseg[self.shmsegIdx].res_m_to_s = NO_RESPONSE;
+                        handle_signal_master_parameter_ack_response();
                         continue;
                     case NACK:
-                        // Master processed, allow slave to process and try again
-                        if (sem_post(&self.master_processed_communication_cycle)) {
-                            fprintf(stderr, "sem_post() call failed, continuing...\n");
-                            continue;
-                        }
-                        self.shmp->slave_shmseg[self.shmsegIdx].req_s_to_m = NO_REQUEST;
-                        self.shmp->slave_shmseg[self.shmsegIdx].res_m_to_s = NO_RESPONSE;
+                        handle_signal_master_parameter_nack_response();
                         continue;
                     case NO_RESPONSE:
-                        // Did not receive a response from master! Continue checking if received request from master.
+                        /* Did not receive a response from master!
+                         * Continue checking if received request from master.
+                         */
                         break;
                     default:
-                        // Master processed, allow slave to process and try again
-                        if (sem_post(&self.master_processed_communication_cycle)) {
-                            fprintf(stderr, "sem_post() call failed, continuing...\n");
-                            continue;
-                        }
-                        fprintf(stderr, "Unrecognized response received from master process %d\n", sig_info.si_pid);
-                        self.shmp->slave_shmseg[self.shmsegIdx].req_s_to_m = NO_REQUEST;
-                        self.shmp->slave_shmseg[self.shmsegIdx].res_m_to_s = NO_RESPONSE;
+                        handle_signal_master_parameter_unrecognized_response();
                         continue;
                     }
-
                     break;
                 default:
+                    /* Did not send a request to master!
+                     * Continue checking if received request from master.
+                     */
                     break;
                 }
 
-
                 // No response from master... Check requests then.
-                switch (self.shmp->slave_shmseg[self.shmsegIdx].req_m_to_s)
+                switch (self.shmseg->req_m_to_s)
                 {
                 case CONNECT_SLAVE:
                     handle_connect_slave_request();
@@ -362,11 +349,10 @@ static void *signal_handler_thread(void *ignore) {
                     handle_stop_cycle_slave_request();
                     break;
                 case NO_REQUEST:
-                    fprintf(stderr, "[%d] Unexpected NO_REQUEST received from master process %d\n", getpid(), sig_info.si_pid);
+                    handle_unexpected_no_request();
                     break;
                 default:
-                    fprintf(stderr, "Unrecognized command received from master process %d\n", sig_info.si_pid);
-                    // TODO 0: Send NACK to master with error message
+                    handle_unrecognized_request();
                     break;
                 }
             }
@@ -376,20 +362,93 @@ static void *signal_handler_thread(void *ignore) {
 }
 
 
-void handle_connect_slave_request() {
-    shmseg_t *shmseg = &self.shmp->slave_shmseg[self.shmsegIdx];
+long int wait_master_signal_master_parameter_response() {
+    long int elapsed_communication_cycle_us = 0;
+    long int time_segment_us = self.shmseg->communication_cycle_us
+                                / WAIT_MASTER_RESPONSE_TIMEOUT_SEGMENTS;
+    int threshold = 0;
 
-    // Fill shared memory structure
-    strcpy(shmseg->name, self.name);
-    shmseg->available_parameters = self.available_parameters;
+    while (sem_trywait(&self.master_processed_communication_cycle)) {
+        if (threshold >= WAIT_MASTER_RESPONSE_TIMEOUT_SEGMENTS) {
+            set_error("Master failed to respond to request!");
+            break;
+        }
 
-    // Send ACK response back to master
-    shmseg->res_s_to_m = ACK;
-    fprintf(stderr, "[DEBUG %d] shmseg->res_s_to_m = ACK;\n", getpid());
+        usleep(time_segment_us);
+
+        elapsed_communication_cycle_us += time_segment_us;
+        ++threshold;
+        // Let signal be lost, continue as nothing happened.
+    }
+
+    fprintf(stderr,
+        "[DEBUG %d] master_processed_communication_cycle, threshold = %d >= %d ?\n",
+        getpid(), threshold, WAIT_MASTER_RESPONSE_TIMEOUT_SEGMENTS);
+
+    return time_segment_us;
+}
+
+
+void send_master_ack_response() {
+    self.shmseg->res_s_to_m = ACK;
     if (kill(self.shmp->master_pid, SIGUSR1)) {
         fprintf(stderr, "Failed to send response back to master!\n");
-        return;
     }
+}
+
+void send_master_nack_response() {
+    self.shmseg->res_s_to_m = NACK;
+    if (kill(self.shmp->master_pid, SIGUSR1)) {
+        fprintf(stderr, "Failed to send response back to master!\n");
+    }
+}
+
+void send_master_signal_master_parameter_request() {
+    fprintf(stderr, "[DEBUG %d] Sent data request to master\n", getpid());
+
+    self.shmseg->req_s_to_m = SIGNAL_MASTER_PARAMETER;
+    if (kill(self.shmp->master_pid, SIGUSR1)) {
+        fprintf(stderr, "Failed to send \"signal master parameter\" signal to master!\n");
+    }
+}
+
+void handle_signal_master_parameter_ack_response() {
+    // Master processed, allow slave to process and send again
+    if (sem_post(&self.master_processed_communication_cycle)) {
+        fprintf(stderr, "sem_post() call failed!\n");
+    }
+    fprintf(stderr, "[DEBUG %d] received ACK for processing new parameter cycle.\n", getpid());
+    self.shmseg->req_s_to_m = NO_REQUEST;
+    self.shmseg->res_m_to_s = NO_RESPONSE;
+}
+
+void handle_signal_master_parameter_nack_response() {
+    // Master processed, allow slave to process and try again
+    if (sem_post(&self.master_processed_communication_cycle)) {
+        fprintf(stderr, "sem_post() call failed!\n");
+    }
+    self.shmseg->req_s_to_m = NO_REQUEST;
+    self.shmseg->res_m_to_s = NO_RESPONSE;
+}
+
+void handle_signal_master_parameter_unrecognized_response() {
+    // Master processed, allow slave to process and try again
+    if (sem_post(&self.master_processed_communication_cycle)) {
+        fprintf(stderr, "sem_post() call failed!\n");
+    }
+    fprintf(stderr, "[DEBUG %d] Unrecognized response received from master\n", getpid());
+    self.shmseg->req_s_to_m = NO_REQUEST;
+    self.shmseg->res_m_to_s = NO_RESPONSE;
+}
+
+
+void handle_connect_slave_request() {
+    // Fill shared memory structure
+    strcpy(self.shmseg->name, self.name);
+    self.shmseg->available_parameters = self.available_parameters;
+
+    // Send master response
+    send_master_ack_response();
 }
 
 int handle_disconnect_slave_request() {
@@ -405,93 +464,68 @@ void handle_change_name_slave_request() {
         for (int i = SLAVE_NAME_SIZE - 1; i > 0; --i) {
             if (self.name[i] == '_') {
                 self.name[i] = '\0';
-                self.shmp->slave_shmseg[self.shmsegIdx].name[i] = '\0';
+                self.shmseg->name[i] = '\0';
                 break;
             }
             self.name[i] = '\0';
-            self.shmp->slave_shmseg[self.shmsegIdx].name[i] = '\0';
+            self.shmseg->name[i] = '\0';
         }
     }
     ++prev_change_name_idx;
     if (prev_change_name_idx < self.change_name_idx) {
         // Index overflow send NACK
-        // TODO 0: Set error message for master to log
-        fprintf(stderr, "[DEBUG %d] self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = NACK\n", getpid());
-        self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = NACK;
-        if (kill(self.shmp->master_pid, SIGUSR1)) {
-            fprintf(stderr, "Failed to send response back to master!\n");
-        }
+        set_error("Change name index overflow!");
+        send_master_nack_response();
         return;
     }
     ++self.change_name_idx;
 
-    sprintf(self.name, "%s_%u", self.shmp->slave_shmseg[self.shmsegIdx].name, self.change_name_idx);
-    strcpy(self.shmp->slave_shmseg[self.shmsegIdx].name, self.name);
+    sprintf(self.name, "%s_%u", self.shmseg->name, self.change_name_idx);
+    strcpy(self.shmseg->name, self.name);
 
-    printf("[DEBUG %d] Changed slave name to %s\n", getpid(), self.name);
-
-    fprintf(stderr, "[DEBUG %d] self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = ACK\n", getpid());
-    self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = ACK;
-    if (kill(self.shmp->master_pid, SIGUSR1)) {
-        fprintf(stderr, "Failed to send response back to master!\n");
-    }
+    send_master_ack_response();
 }
 
 void handle_start_cycle_slave_request() {
-    if (self.shmp->slave_shmseg[self.shmsegIdx].cycle_started) {
-        // TODO 0: Set error log msg variable for master
-        self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = NACK;
-        fprintf(stderr, "[DEBUG %d] self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = NACK\n", getpid());
-        if (kill(self.shmp->master_pid, SIGUSR1)) {
-            fprintf(stderr, "Failed to send response back to master!\n");
-        }
+    if (self.shmseg->cycle_started) {
+        set_error("Slave cycle already started!");
+        send_master_nack_response();
         return;
     }
 
-    self.shmp->slave_shmseg[self.shmsegIdx].cycle_started = true;
+    self.shmseg->cycle_started = true;
 
     if (sem_post(&self.allow_communication_cycle)) {
-        fprintf(stderr, "sem_post() call failed!\n");
-
-        // TODO 0: Set error log msg variable for master
-        self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = NACK;
-        fprintf(stderr, "[DEBUG %d] self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = NACK\n", getpid());
-        if (kill(self.shmp->master_pid, SIGUSR1)) {
-            fprintf(stderr, "Failed to send response back to master!\n");
-        }
+        set_error("sem_post() failed on self.allow_communication_cycle!");
+        send_master_nack_response();
         return;
     }
 
-    fprintf(stderr, "[DEBUG %d] sent self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = ACK\n", getpid());
-    self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = ACK;
-    if (kill(self.shmp->master_pid, SIGUSR1)) {
-        fprintf(stderr, "Failed to send response back to master!\n");
-    }
+    send_master_ack_response();
 }
 
 void handle_stop_cycle_slave_request() {
-    if (!self.shmp->slave_shmseg[self.shmsegIdx].cycle_started) {
-        // TODO 0: Set error log msg variable for master
-        self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = NACK;
-        fprintf(stderr, "[DEBUG %d] self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = NACK\n", getpid());
-        if (kill(self.shmp->master_pid, SIGUSR1)) {
-            fprintf(stderr, "Failed to send response back to master!\n");
-        }
+    if (!self.shmseg->cycle_started) {
+        set_error("Slave cycle already stopped!");
+        send_master_nack_response();
         return;
     }
 
-    self.shmp->slave_shmseg[self.shmsegIdx].cycle_started = false;
+    self.shmseg->cycle_started = false;
 
-    fprintf(stderr, "[DEBUG %d] before getting lock on allow_communication_cycle\n", getpid());
     sem_wait(&self.allow_communication_cycle);
 
-    fprintf(stderr, "[DEBUG %d] got lock on allow_communication_cycle\n", getpid());
+    send_master_ack_response();
+}
 
-    fprintf(stderr, "[DEBUG %d] sent self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = ACK\n", getpid());
-    self.shmp->slave_shmseg[self.shmsegIdx].res_s_to_m = ACK;
-    if (kill(self.shmp->master_pid, SIGUSR1)) {
-        fprintf(stderr, "Failed to send response back to master!\n");
-    }
+void handle_unrecognized_request() {
+    set_error("Unrecognized request received!");
+    send_master_nack_response();
+}
+
+void handle_unexpected_no_request() {
+    set_error("Unexpected no request received!");
+    send_master_nack_response();
 }
 
 
@@ -514,8 +548,6 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "pthread_join() to join signal handler thread failed\n");
         return RTC_ERROR;
     }
-
-// "Slaves can also send errors along with the data" - so master checks first for errors
 
     return final();
 }
