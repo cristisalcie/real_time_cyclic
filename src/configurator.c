@@ -948,7 +948,7 @@ int main(int argc, char *argv[]) {
                 break;
             }
 
-            if (send_stop_cycle_slave_request(slave_pid)) {
+            if (send_stop_cycle_slave_request(slave_pid) == RTC_SUCCESS) {
                 wait_stop_slave_cycle_response();
             }
 
