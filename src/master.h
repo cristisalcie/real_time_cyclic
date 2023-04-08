@@ -39,7 +39,7 @@ typedef struct master_context_s {
 
 int init_signal_semaphores();
 int init_control_shared_memory();
-void init_slave_shmseg_shared_memory();
+void init_slave_shmseg_shared_memory(shmseg_t *slave_shmseg);
 int init_shared_memory();
 int init_async_signal_handler();
 int init();
