@@ -173,109 +173,6 @@ static int first_signal_ever_setup() {
 }
 
 
-static int destroy_allow_communication_cycle_semaphore() {
-    if (sem_destroy(&self.allow_communication_cycle)) {
-        fprintf(stderr, "sem_destroy() call failed!\n");
-        return RTC_ERROR;
-    }
-
-    return RTC_SUCCESS;
-}
-
-static int destroy_master_processed_communication_cycle_semaphore() {
-    if (sem_destroy(&self.master_processed_communication_cycle)) {
-        fprintf(stderr, "sem_destroy() call failed!\n");
-        return RTC_ERROR;
-    }
-
-    return RTC_SUCCESS;
-}
-
-static int final() {
-    int ret = RTC_SUCCESS;
-
-    ret = destroy_allow_communication_cycle_semaphore();
-    ret = destroy_master_processed_communication_cycle_semaphore();
-
-    // Deattach from shared memory
-    if (shmdt(self.shmp)) {
-        fprintf(stderr, "shmdt() call failed!\n");
-        ret = RTC_ERROR;
-    }
-    self.shmp = NULL;
-
-    return ret;
-}
-
-
-static int init_allow_communication_cycle_semaphore() {
-    if (sem_init(&self.allow_communication_cycle, 0, 0)) {
-        fprintf(stderr, "sem_init() call failed!\n");
-        return RTC_ERROR;
-    }
-
-    return RTC_SUCCESS;
-}
-
-static int init_master_processed_communication_cycle_semaphore() {
-    if (sem_init(&self.master_processed_communication_cycle, 0, 0)) {
-        fprintf(stderr, "sem_init() call failed!\n");
-        return RTC_ERROR;
-    }
-
-    return RTC_SUCCESS;
-}
-
-static int init_shared_memory() {
-    int shmid;
-
-    // Get or create if not existing shared memory
-    shmid = shmget(SHARED_MEMORY_KEY, sizeof(shm_t), 0666);
-    if (shmid == -1) {
-        fprintf(stderr, "shmget() call failed to get shared memory id!\n");
-        perror("shmget() failed!");
-        return RTC_ERROR;
-    }
-
-    // Attach to shared memory
-    self.shmp = shmat(shmid, NULL, 0);
-    if (self.shmp == (void*) -1) {
-        fprintf(stderr, "shmmat() call failed to attach to shared memory!\n");
-        return RTC_ERROR;
-    }
-
-    return RTC_SUCCESS;
-}
-
-static int init(int argc, char *argv[]) {
-    if (argc != 3) {
-        fprintf(stderr, "Syntax: %s <slave_name> <available_parameters>\n", argv[0]);
-        return RTC_ERROR;
-    }
-
-    int ret;
-
-    memset(&self, 0, sizeof(slave_context_t));
-
-    strcpy(self.name, argv[1]);
-    if (argv[2][0] == '1')
-        self.available_parameters |= STRING_PARAMETER_BIT;
-    if (argv[2][1] == '1')
-        self.available_parameters |= INT_PARAMETER_BIT;
-    if (argv[2][2] == '1')
-        self.available_parameters |= BOOL_PARAMETER_BIT;
-
-    if ((ret = block_signals()) != RTC_SUCCESS) return ret;
-    if ((ret = init_shared_memory()) != RTC_SUCCESS) return ret;
-    if ((ret = init_allow_communication_cycle_semaphore()) != RTC_SUCCESS) return ret;
-    if ((ret = init_master_processed_communication_cycle_semaphore()) != RTC_SUCCESS) return ret;
-    if ((ret = create_communication_cycle_detached_thread()) != RTC_SUCCESS) return ret;
-
-    srand(time(NULL));
-
-    return RTC_SUCCESS;
-}
-
 
 static void *signal_handler_thread(void *ignore) {
     int err;
@@ -359,6 +256,109 @@ static void *signal_handler_thread(void *ignore) {
         }
     }
     return NULL;
+}
+
+
+int destroy_allow_communication_cycle_semaphore() {
+    if (sem_destroy(&self.allow_communication_cycle)) {
+        fprintf(stderr, "sem_destroy() call failed!\n");
+        return RTC_ERROR;
+    }
+
+    return RTC_SUCCESS;
+}
+
+int init_allow_communication_cycle_semaphore() {
+    if (sem_init(&self.allow_communication_cycle, 0, 0)) {
+        fprintf(stderr, "sem_init() call failed!\n");
+        return RTC_ERROR;
+    }
+
+    return RTC_SUCCESS;
+}
+
+int init_master_processed_communication_cycle_semaphore() {
+    if (sem_init(&self.master_processed_communication_cycle, 0, 0)) {
+        fprintf(stderr, "sem_init() call failed!\n");
+        return RTC_ERROR;
+    }
+
+    return RTC_SUCCESS;
+}
+
+int init_shared_memory() {
+    int shmid;
+
+    // Get or create if not existing shared memory
+    shmid = shmget(SHARED_MEMORY_KEY, sizeof(shm_t), 0666);
+    if (shmid == -1) {
+        fprintf(stderr, "shmget() call failed to get shared memory id!\n");
+        perror("shmget() failed!");
+        return RTC_ERROR;
+    }
+
+    // Attach to shared memory
+    self.shmp = shmat(shmid, NULL, 0);
+    if (self.shmp == (void*) -1) {
+        fprintf(stderr, "shmmat() call failed to attach to shared memory!\n");
+        return RTC_ERROR;
+    }
+
+    return RTC_SUCCESS;
+}
+
+int init(int argc, char *argv[]) {
+    if (argc != 3) {
+        fprintf(stderr, "Syntax: %s <slave_name> <available_parameters>\n", argv[0]);
+        return RTC_ERROR;
+    }
+
+    int ret;
+
+    memset(&self, 0, sizeof(slave_context_t));
+
+    strcpy(self.name, argv[1]);
+    if (argv[2][0] == '1')
+        self.available_parameters |= STRING_PARAMETER_BIT;
+    if (argv[2][1] == '1')
+        self.available_parameters |= INT_PARAMETER_BIT;
+    if (argv[2][2] == '1')
+        self.available_parameters |= BOOL_PARAMETER_BIT;
+
+    if ((ret = block_signals()) != RTC_SUCCESS) return ret;
+    if ((ret = init_shared_memory()) != RTC_SUCCESS) return ret;
+    if ((ret = init_allow_communication_cycle_semaphore()) != RTC_SUCCESS) return ret;
+    if ((ret = init_master_processed_communication_cycle_semaphore()) != RTC_SUCCESS) return ret;
+    if ((ret = create_communication_cycle_detached_thread()) != RTC_SUCCESS) return ret;
+
+    srand(time(NULL));
+
+    return RTC_SUCCESS;
+}
+
+int destroy_master_processed_communication_cycle_semaphore() {
+    if (sem_destroy(&self.master_processed_communication_cycle)) {
+        fprintf(stderr, "sem_destroy() call failed!\n");
+        return RTC_ERROR;
+    }
+
+    return RTC_SUCCESS;
+}
+
+int final() {
+    int ret = RTC_SUCCESS;
+
+    ret = destroy_allow_communication_cycle_semaphore();
+    ret = destroy_master_processed_communication_cycle_semaphore();
+
+    // Deattach from shared memory
+    if (shmdt(self.shmp)) {
+        fprintf(stderr, "shmdt() call failed!\n");
+        ret = RTC_ERROR;
+    }
+    self.shmp = NULL;
+
+    return ret;
 }
 
 

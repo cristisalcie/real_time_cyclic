@@ -36,6 +36,15 @@ typedef struct slave_context_s {
     shmseg_t *shmseg;
 } slave_context_t;
 
+int init_allow_communication_cycle_semaphore();
+int init_master_processed_communication_cycle_semaphore();
+int init_shared_memory();
+int init(int argc, char *argv[]);
+
+int destroy_allow_communication_cycle_semaphore();
+int destroy_master_processed_communication_cycle_semaphore();
+int final();
+
 // Returns elapsed time waiting for master response always >= 0
 long int wait_master_signal_master_parameter_response();
 
