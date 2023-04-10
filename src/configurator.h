@@ -6,7 +6,15 @@
 
 #define MASTER_BIN_PATH "/home/ubuntu/Projects/real_time_cyclic/out/master"
 #define SLAVE_BIN_PATH "/home/ubuntu/Projects/real_time_cyclic/out/slave"
+#define LOG_FILE_PATH "/var/log/rtc_master.log"
 #define MAX_LINE_LENGTH 16
+
+typedef enum {
+    LOG_DEBUG = 1 << 0,
+    LOG_ERROR = 1 << 1,
+    LOG_INFO = 1 << 2,
+    LOG_LEVEL_SIZE
+} log_level_t;
 
 typedef struct created_slave_s {
     pid_t pid;
