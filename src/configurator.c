@@ -305,8 +305,6 @@ void wait_start_slave_cycle_response() {
             fprintf(stderr, "Unrecognized response received!");
             break;
         }
-        self.control_shmp->request = NO_REQUEST;
-        self.control_shmp->response = NO_RESPONSE;
     }
 }
 
@@ -335,8 +333,6 @@ void wait_stop_slave_cycle_response() {
             fprintf(stderr, "Unrecognized response received!");
             break;
         }
-        self.control_shmp->request = NO_REQUEST;
-        self.control_shmp->response = NO_RESPONSE;
     }
 }
 
@@ -367,8 +363,6 @@ void wait_connect_slave_response(pid_t slave_pid) {
             fprintf(stderr, "Unrecognized response received!");
             break;
         }
-        self.control_shmp->request = NO_REQUEST;
-        self.control_shmp->response = NO_RESPONSE;
     }
 }
 
@@ -399,8 +393,6 @@ void wait_disconnect_slave_response(pid_t slave_pid) {
             fprintf(stderr, "Unrecognized response received!");
             break;
         }
-        self.control_shmp->request = NO_REQUEST;
-        self.control_shmp->response = NO_RESPONSE;
     }
 }
 

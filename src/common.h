@@ -24,7 +24,7 @@
 #define INT_VALUE_UNDEFINED -1
 #define BOOL_VALUE_UNDEFINED -1
 
-#define WAIT_TIMEOUT_SECONDS 3
+#define WAIT_TIMEOUT_SECONDS 5
 #define ERROR_NOT_SET_COMMUNICATION_CYCLE_MS -1
 
 #define SHMSEG_ERROR_SIZE 20
@@ -42,14 +42,12 @@ typedef enum {
     AUTOMATIC_TEST,
     CHANGE_SLAVE_NAME,  // It is an extension to CONNECT_SLAVE
     SIGNAL_MASTER_PARAMETER,  // Used by slave in request
-    NO_REQUEST,  // Used only for configurator - master communication
     REQUEST_SIZE
 } request_t;
 
 typedef enum {
     NACK,
     ACK,
-    NO_RESPONSE,  // Used only for configurator - master communication
     RESPONSE_SIZE
 } response_t;
 
