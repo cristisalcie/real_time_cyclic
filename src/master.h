@@ -30,9 +30,6 @@ typedef struct master_context_s {
     shm_t *shmp;
     control_shm_t *control_shmp;
 
-    // Signal sleeping processor slave threads using semaphore
-    sem_t sig_semaphore[MAX_SLAVES];
-
     pthread_mutex_t lock_async_handler_threads;
 } master_context_t;
 

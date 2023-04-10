@@ -69,6 +69,8 @@ typedef struct shmseg_s {
     request_t req_s_to_m;
     response_t res_s_to_m;
     int available_parameters;
+    bool cycle_started;
+
 
     // Fields modifiable only by master
     pid_t pid;  // Master assigns shared memory index by setting pid of shared memory segment owner
@@ -84,16 +86,19 @@ typedef struct shmseg_s {
     response_t res_m_to_s;
     bool is_connected;
 
+
     // Modifiable only by configurator
     int requested_parameters;
     long int communication_cycle_us;
 
+
     // Fields modifiable by master and slave
-    // Slave sets them, master reads and resets them to a DEFINE value in order for master to know
-    // whether requested parameters got sent in next the cycle.
     sem_t sem_s_to_m_request; // Binary semaphore like mutex. Lock until response is complete
     sem_t sem_m_to_s_request; // Binary semaphore like mutex. Lock until response is complete
-    bool cycle_started;
+    sem_t sem_sig;
+
+    // Slave sets them, master reads and resets them to a DEFINE value in order for master to know
+    // whether requested parameters got sent in next the cycle.
     shmseg_error_t shmseg_error[SHMSEG_ERROR_SIZE];  // Slave sets, Master resets when consumed
     u_int16_t shmseg_error_current_size;
     char string_value[STRING_SIZE];

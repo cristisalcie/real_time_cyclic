@@ -319,18 +319,32 @@ int final() {
 
 void send_master_ack_response() {
     fprintf(stderr, "slave[%d]: send_master_ack_response()\n", getpid());
+
+    // Signal master through semaphore
     self.shmseg->res_s_to_m = ACK;
-    if (kill(self.shmp->master_pid, SIGUSR1)) {
+    if (sem_post(&self.shmseg->sem_sig)) {
         fprintf(stderr, "slave[%d]: Failed to send response back to master!\n", getpid());
     }
+
+    // Old code
+    // if (kill(self.shmp->master_pid, SIGUSR1)) {
+    //     fprintf(stderr, "slave[%d]: Failed to send response back to master!\n", getpid());
+    // }
 }
 
 void send_master_nack_response() {
     fprintf(stderr, "slave[%d]: send_master_nack_response()\n", getpid());
+
+    // Signal master through semaphore
     self.shmseg->res_s_to_m = NACK;
-    if (kill(self.shmp->master_pid, SIGUSR1)) {
+    if (sem_post(&self.shmseg->sem_sig)) {
         fprintf(stderr, "slave[%d]: Failed to send response back to master!\n", getpid());
     }
+
+    // Old code
+    // if (kill(self.shmp->master_pid, SIGUSR1)) {
+    //     fprintf(stderr, "slave[%d]: Failed to send response back to master!\n", getpid());
+    // }
 }
 
 long int send_master_signal_master_parameter_request() {
@@ -374,11 +388,16 @@ long int send_master_signal_master_parameter_request() {
         return time_segment_us;
     }
 
-
+    // Signal master through semaphore
     self.shmseg->req_s_to_m = SIGNAL_MASTER_PARAMETER;
-    if (kill(self.shmp->master_pid, SIGUSR1)) {
+    if (sem_post(&self.shmseg->sem_sig)) {
         fprintf(stderr, "slave[%d]: Failed to send \"signal master parameter\" signal to master!\n", getpid());
     }
+
+    // Old code
+    // if (kill(self.shmp->master_pid, SIGUSR1)) {
+    //     fprintf(stderr, "slave[%d]: Failed to send \"signal master parameter\" signal to master!\n", getpid());
+    // }
 
     return time_segment_us;
 }

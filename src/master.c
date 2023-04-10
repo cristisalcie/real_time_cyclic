@@ -119,7 +119,7 @@ static void *slave_processor_detached_thread(void *data) {
 
     while (true) {
         log_debug("Slave processor detached thread with tid %ld preparing to wait for semaphore[%d]", pthread_self(), shmsegIdx);
-        if (sem_wait(&(self.sig_semaphore[shmsegIdx]))) {
+        if (sem_wait(&slave_shmseg->sem_sig)) {
             // TODO: handle failure
             log_error("sem_wait() call failed!");
             return NULL;
@@ -200,9 +200,10 @@ static void async_signal_handler(int signum, siginfo_t *sig_info, void *context)
                 // TODO: log_error("Received signal SIGUSR1 from unrecognized process %d, continuing...", sig_info->si_pid);
             } else {
                 // Allow thread allocated for pid to process
-                if (sem_post(&(self.sig_semaphore[shmsegIdx]))) {
+                // if (sem_post(&(self.sig_semaphore[shmsegIdx]))) {
                     // TODO: log_error("sem_post() call failed, continuing...");
-                }
+                // }
+                // Do nothing
             }
             break;
         }
@@ -219,7 +220,7 @@ int init_signal_semaphores() {
             log_error("sem_init() call failed!");
             return RTC_ERROR;
         }
-        if (sem_init(&self.sig_semaphore[i], 0, 0)) {
+        if (sem_init(&self.shmp->slave_shmseg[i].sem_sig, 1, 0)) {
             log_error("sem_init() call failed!");
             return RTC_ERROR;
         }
@@ -341,7 +342,7 @@ int init() {
 
 int destroy_signal_semaphores() {
     for (int i = 0; i < MAX_SLAVES; ++i) {
-        if (sem_destroy(&self.sig_semaphore[i])) {
+        if (sem_destroy(&self.shmp->slave_shmseg[i].sem_sig)) {
             log_error("sem_destroy() call failed!");
             return RTC_ERROR;
         }
@@ -853,15 +854,15 @@ int main(int argc, char *argv[]) {
     init(); // TODO: Failed initialization => end program
 
     int ret;
-    pthread_t tid1;
+    // pthread_t tid1;
     pthread_t tid2;
 
     // Create signal listening threads
-    ret = pthread_create(&tid1, NULL, async_signal_handler_thread, NULL);
-    if (ret) {
-        log_error("pthread_create() to create signal handler thread failed");
-        return RTC_ERROR;
-    }
+    // ret = pthread_create(&tid1, NULL, async_signal_handler_thread, NULL);
+    // if (ret) {
+    //     log_error("pthread_create() to create signal handler thread failed");
+    //     return RTC_ERROR;
+    // }
     ret = pthread_create(&tid2, NULL, sync_signal_handler_thread, NULL);
     if (ret) {
         log_error("pthread_create() to create signal handler thread failed");
@@ -875,12 +876,12 @@ int main(int argc, char *argv[]) {
     }
 
     // Wait for signal listening thread to end execution
-    ret = pthread_join(tid1, NULL);                        
-    if (ret < 0) {
-        log_error("pthread_join() to join signal handler thread failed");
-        return RTC_ERROR;
-    }
-    ret = pthread_join(tid2, NULL);                        
+    // ret = pthread_join(tid1, NULL);
+    // if (ret < 0) {
+    //     log_error("pthread_join() to join signal handler thread failed");
+    //     return RTC_ERROR;
+    // }
+    ret = pthread_join(tid2, NULL);
     if (ret < 0) {
         log_error("pthread_join() to join signal handler thread failed");
         return RTC_ERROR;
