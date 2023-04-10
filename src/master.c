@@ -326,8 +326,8 @@ int init() {
 
     // openlog("master", LOG_PID | LOG_PERROR, LOG_USER);
     openlog("master", LOG_PID, LOG_USER);
-    // setlogmask(LOG_UPTO(LOG_DEBUG));  // includes all logs 0,1,2 up to 7(DEBUG)
-    setlogmask(LOG_MASK(LOG_ERR) | LOG_MASK(LOG_INFO));
+    setlogmask(LOG_UPTO(LOG_DEBUG));  // includes all logs 0,1,2 up to 7(DEBUG)
+    // setlogmask(LOG_MASK(LOG_ERR) | LOG_MASK(LOG_INFO));
     log_info("Started master!");
 
     if ((ret = block_signals()) != RTC_SUCCESS) return ret;

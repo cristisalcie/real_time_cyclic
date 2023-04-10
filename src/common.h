@@ -39,6 +39,7 @@ typedef enum {
     START_SLAVE_CYCLE,
     STOP_SLAVE_CYCLE,
     PRINT_SLAVE_DATA,
+    PRINT_LOG_DATA,
     AUTOMATIC_TEST,
     CHANGE_SLAVE_NAME,  // It is an extension to CONNECT_SLAVE
     SIGNAL_MASTER_PARAMETER,  // Used by slave in request

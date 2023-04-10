@@ -103,6 +103,79 @@ static void print_slave_data_by_pid(pid_t pid) {
     printf("\n");
 }
 
+// Return -1 on error, log level on success.
+static int read_log_level_input() {
+    int log_level = 0;
+    size_t read_characters;
+    size_t line_length = MAX_LINE_LENGTH;
+    char *line = (char*)calloc(MAX_LINE_LENGTH, sizeof(char));
+
+    read_characters = getline(&line, &line_length, stdin);
+    if (read_characters == -1) {
+        printf("Failed to read parameters line\n");
+    }
+
+    if (line[0] == '1')
+        log_level |= LOG_DEBUG;
+    if (line[1] == '1')
+        log_level |= LOG_ERROR;
+    if (line[2] == '1')
+        log_level |= LOG_INFO;
+
+    free(line);
+
+    printf("\n");
+
+    return log_level;
+}
+
+static void print_log_level_menu() {
+    printf("\n");
+    printf("Set log level (<XYZ> where X = DEBUG, Y = ERROR, Z = INFO; X | Y | Z = 1 => log level set otherwise not available): ");
+}
+
+// log_level options:
+// LOG_DEBUG = debug && error && info
+// LOG_ERROR = error && info
+// LOG_INFO  = info
+static void print_log_data(int log_level) {
+    FILE *log_ptr;
+    char *line = NULL;
+    size_t len = 0;
+    char log_line_month[4];
+    char log_line_day[3];
+    char log_line_time[3];
+    char log_line_user[3];
+    char log_line_process_name[STRING_SIZE];
+    char log_line_level[8];
+
+    // Open log
+    log_ptr = fopen(LOG_FILE_PATH, "r");
+    if (!log_ptr) {
+        fprintf(stderr, "Failed to open file: %s\n", LOG_FILE_PATH);
+    }
+
+    // Read line by line
+    while (getline(&line, &len, log_ptr) != -1) {
+        sscanf(line, "%s %s %s %s %s %s", log_line_month, log_line_day, log_line_time, log_line_user, log_line_process_name, log_line_level);
+
+        if ((log_level & LOG_DEBUG) && !strcmp(log_line_level, "[DEBUG]")) {
+            printf("%s", line);
+        } else if ((log_level & LOG_ERROR) && !strcmp(log_line_level, "[ERROR]")) {
+            printf("%s", line);
+        } else if ((log_level & LOG_INFO) && !strcmp(log_line_level, "[INFO]")) {
+            printf("%s", line);
+        }
+    }
+
+    if (line) {
+        free(line);
+    }
+
+    fclose(log_ptr);
+    log_ptr = NULL;
+}
+
 static void print_main_menu() {
     printf("\n");
     for (int i = 0; i < CHANGE_SLAVE_NAME; ++i) {
@@ -134,12 +207,14 @@ static void print_main_menu() {
         case PRINT_SLAVE_DATA:
             printf("%d: Print slave data\n", i);
             break;
+        case PRINT_LOG_DATA:
+            printf("%d: Print log data\n", i);
+            break;
         case AUTOMATIC_TEST:
             printf("%d: Automatic test\n", i);
             break;
         }
     }
-
 }
 
 static void read_req_code() {
@@ -957,7 +1032,12 @@ int main(int argc, char *argv[]) {
                 }
 
                 print_slave_data_by_pid(self.shmp->slave_shmseg[i].pid);
-            }            
+            }
+            break;
+        case PRINT_LOG_DATA:
+                print_log_level_menu();
+                int log_level = read_log_level_input();
+                print_log_data(log_level);
             break;
         case AUTOMATIC_TEST:
         {
