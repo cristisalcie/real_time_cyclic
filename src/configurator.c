@@ -5,6 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <semaphore.h>
 
 #include "configurator.h"
 
@@ -976,8 +977,8 @@ int main(int argc, char *argv[]) {
             char slave_name[] = "asd";
             char available_parameters[] = "111";
             char requested_parameters[] = "010";
-            int communication_cycle_us = 1750 * 1000;
-            // int communication_cycle_us = 500 * 1000;
+            // int communication_cycle_us = 1750 * 1000;
+            int communication_cycle_us = 500 * 1000;
 
             printf("Insert number of extra slaves to test application with: ");
             {

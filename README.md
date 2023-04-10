@@ -77,3 +77,48 @@ doesn't matter.
 - How would the paradigm change if we had to have masters and slaves on different machines?
 - Could we achieve better performance with other inter-process communication mechanisms?
 - What are we actually simulating through the signal usage?
+
+## Implementation details
+
+### Communication protocol
+#### Master - Slave
+Using shared memory.
+
+Function call order by name convention:
+- process 1: send_request
+- process 2: handle_request
+- process 2: send_response
+- process 1: handle_response
+
+Request semaphores will change value from:
+- 1 to 0 on send request
+- 0 to 1 on handle response
+
+Signal received scenarios:
+- in master.c
+    - sem_s_to_m_request = 0 => handle request, send response, continue to next signal
+    - sem_s_to_m_request = 1 => no request to handle, check sem_m_to_s_request
+
+    - sem_m_to_s_request = 0 => receive response signal, increment semaphore
+    - sem_m_to_s_request = 1 => no request towards slave unhandled (warn/error)
+
+- in slave.c
+    - sem_s_to_m_request = 0 => receive response signal, increment semaphore, continue to next signal
+    - sem_s_to_m_request = 1 => no request towards master unhandled, check sem_m_to_s_request
+
+    - sem_m_to_s_request = 0 => handle request and send response
+    - sem_m_to_s_request = 1 => no response towards master unhandled (warn/error)
+
+#### Configurator - Master
+Using shared memory.
+
+Configurator function call order in infinite loop:
+- user input
+- send request
+- wait for response (with predefined timeout)
+
+Master function call order in infinite loop:
+- handle request
+    - send request to slave (based on request)
+    - handle response from slave (based on request)
+- send response

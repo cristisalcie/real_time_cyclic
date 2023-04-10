@@ -40,16 +40,16 @@ typedef enum {
     STOP_SLAVE_CYCLE,
     PRINT_SLAVE_DATA,
     AUTOMATIC_TEST,
-    CHANGE_SLAVE_NAME,
+    CHANGE_SLAVE_NAME,  // It is an extension to CONNECT_SLAVE
     SIGNAL_MASTER_PARAMETER,  // Used by slave in request
-    NO_REQUEST,
+    NO_REQUEST,  // Used only for configurator - master communication
     REQUEST_SIZE
 } request_t;
 
 typedef enum {
     NACK,
     ACK,
-    NO_RESPONSE,
+    NO_RESPONSE,  // Used only for configurator - master communication
     RESPONSE_SIZE
 } response_t;
 
@@ -60,12 +60,28 @@ typedef struct shmseg_error_s {
 typedef struct shmseg_s {
     // Fields modifiable only by slaves
     char name[SLAVE_NAME_SIZE];  // Name string can't contain spaces
+
+    /* signal received in master.c
+     * - sem_s_to_m_request = 0 => handle request and send response
+     * - sem_s_to_m_request = 1 => no request to handle
+     * signal received in slave.c
+     * - sem_s_to_m_request = 0 => receive response signal, increment semaphore
+     * - sem_s_to_m_request = 1 => nothing to handle (but slave can send request)
+     */
     request_t req_s_to_m;
     response_t res_s_to_m;
     int available_parameters;
 
     // Fields modifiable only by master
     pid_t pid;  // Master assigns shared memory index by setting pid of shared memory segment owner
+
+    /* signal received in master.c
+     * - sem_m_to_s_request = 0 => receive response signal, increment semaphore
+     * - sem_m_to_s_request = 1 => nothing to handle (but master can send request)
+     * signal received in slave.c
+     * - sem_m_to_s_request = 0 => handle request and send response
+     * - sem_m_to_s_request = 1 => no request to handle
+     */
     request_t req_m_to_s;
     response_t res_m_to_s;
     bool is_connected;
@@ -77,6 +93,8 @@ typedef struct shmseg_s {
     // Fields modifiable by master and slave
     // Slave sets them, master reads and resets them to a DEFINE value in order for master to know
     // whether requested parameters got sent in next the cycle.
+    sem_t sem_s_to_m_request; // Binary semaphore like mutex. Lock until response is complete
+    sem_t sem_m_to_s_request; // Binary semaphore like mutex. Lock until response is complete
     bool cycle_started;
     shmseg_error_t shmseg_error[SHMSEG_ERROR_SIZE];  // Slave sets, Master resets when consumed
     u_int16_t shmseg_error_current_size;

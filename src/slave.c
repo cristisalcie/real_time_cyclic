@@ -33,7 +33,7 @@ static int getAssignedShmsegIdx(pid_t pid) {
 
     for (int i = 0; i < MAX_SLAVES; ++i) {
         if (self.shmp->slave_shmseg[shmsegIdx].pid == pid) {
-            printf("[SLAVE] Got shared mem idx %d for process %d\n", shmsegIdx, pid);
+            printf("slave[%d]: Got shared mem idx %d\n", pid, shmsegIdx);
             return shmsegIdx;
         }
         ++shmsegIdx;
@@ -74,12 +74,14 @@ static void *slave_communication_cycle_detached_thread(void *ignore) {
     long int sleep_us = ERROR_NOT_SET_COMMUNICATION_CYCLE_MS;
 
     while (true) {
-        fprintf(stderr, "[DEBUG %d] waiting to send cycle data\n", getpid());
+        fprintf(stderr, "slave[%d]: before waiting allow_communication_cycle\n", getpid());
 
         if (sem_wait(&self.allow_communication_cycle)) {
-            fprintf(stderr, "sem_wait() call failed!\n");
+            fprintf(stderr, "slave[%d]: sem_wait() call failed!\n", getpid());
             return NULL;
         }
+
+        fprintf(stderr, "slave[%d]: after waiting allow_communication_cycle\n", getpid());
 
         if (self.shmseg->communication_cycle_us == ERROR_NOT_SET_COMMUNICATION_CYCLE_MS) {
             // NOTE: (already done in master)
@@ -115,16 +117,14 @@ static void *slave_communication_cycle_detached_thread(void *ignore) {
 
 
         if (sem_post(&self.allow_communication_cycle)) {
-            set_error("sem_post() call failed on self.allow_communication_cycle! Stopping communication cycle");
+            set_error("sem_post() call failed on allow_communication_cycle! Stopping communication cycle");
             self.shmseg->cycle_started = false;
         }
         /* handle_stop_communication_cycle can now sem_wait on allow_communication_cycle allowing
          * signal_handler_thread to unlock itself and process master response
          */
 
-        send_master_signal_master_parameter_request();
-
-        sleep_us = self.shmseg->communication_cycle_us - wait_master_signal_master_parameter_response();
+        sleep_us = self.shmseg->communication_cycle_us - send_master_signal_master_parameter_request();
     }
 
     return NULL;
@@ -138,19 +138,19 @@ static int create_communication_cycle_detached_thread() {
 
     ret = pthread_attr_init(&attr);
     if (ret) {
-        fprintf(stderr, "pthread_attr_init() call failed!\n");
+        fprintf(stderr, "slave[%d]: pthread_attr_init() call failed!\n", getpid());
         return RTC_ERROR;
     }
 
     ret = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
     if (ret) {
-        fprintf(stderr, "pthread_attr_setdetachstate() call failed!\n");
+        fprintf(stderr, "slave[%d]: pthread_attr_setdetachstate() call failed!\n", getpid());
         return RTC_ERROR;
     }
 
     ret = pthread_create(&tid, &attr, slave_communication_cycle_detached_thread, NULL);
     if (ret) {
-        fprintf(stderr, "pthread_create() call failed!\n");
+        fprintf(stderr, "slave[%d]: pthread_create() call failed!\n", getpid());
         return RTC_ERROR;
     }
 
@@ -184,7 +184,7 @@ static void *signal_handler_thread(void *ignore) {
     while (true) {
         err = sigwaitinfo(&sig_set, &sig_info);
         if (err == -1) {
-            fprintf(stderr, "sigwaitinfo() call failed!\n");
+            fprintf(stderr, "slave[%d]: sigwaitinfo() call failed!\n", getpid());
         } else {
             if (sig_info.si_pid != self.shmp->master_pid) {
                 fprintf(stderr, "Received signal from process %d."
@@ -199,58 +199,33 @@ static void *signal_handler_thread(void *ignore) {
                     continue;
                 }
 
-                switch (self.shmseg->req_s_to_m)
-                {
-                case SIGNAL_MASTER_PARAMETER:
-                    switch (self.shmseg->res_m_to_s)
-                    {
-                    case ACK:
-                        handle_signal_master_parameter_ack_response();
-                        continue;
-                    case NACK:
-                        handle_signal_master_parameter_nack_response();
-                        continue;
-                    case NO_RESPONSE:
-                        /* Did not receive a response from master!
-                         * Continue checking if received request from master.
-                         */
-                        break;
-                    default:
-                        handle_signal_master_parameter_unrecognized_response();
-                        continue;
-                    }
-                    break;
-                default:
-                    /* Did not send a request to master!
-                     * Continue checking if received request from master.
-                     */
-                    break;
+                // TODO: sem_m_to_s_request_val currently could suffer from starvation.
+                // Possible solution:
+                // Add a variable to change order of semaphore checking.
+
+                int sem_s_to_m_request_val = 1;
+                if (sem_getvalue(&self.shmseg->sem_s_to_m_request, &sem_s_to_m_request_val)) {
+                    fprintf(stderr, "slave[%d]: sem_getvalue() call failed!\n", getpid());
+                    continue;
                 }
 
-                // No response from master... Check requests then.
-                switch (self.shmseg->req_m_to_s)
-                {
-                case CONNECT_SLAVE:
-                    handle_connect_slave_request();
-                    break;
-                case DISCONNECT_SLAVE:
-                    handle_disconnect_slave_request();
-                    break;
-                case CHANGE_SLAVE_NAME:
-                    handle_change_name_slave_request();
-                    break;
-                case START_SLAVE_CYCLE:
-                    handle_start_cycle_slave_request();
-                    break;
-                case STOP_SLAVE_CYCLE:
-                    handle_stop_cycle_slave_request();
-                    break;
-                case NO_REQUEST:
-                    handle_unexpected_no_request();
-                    break;
-                default:
-                    handle_unrecognized_request();
-                    break;
+                if (sem_s_to_m_request_val <= 0) {
+                    // Receive response signal, increment semaphore, continue to next signal
+                    handle_master_response();
+                } else {
+                    int sem_m_to_s_request_val = 1;
+                    if (sem_getvalue(&self.shmseg->sem_m_to_s_request, &sem_m_to_s_request_val)) {
+                        fprintf(stderr, "slave[%d]: sem_getvalue() call failed!\n", getpid());
+                        continue;
+                    }
+
+                    if (sem_m_to_s_request_val <= 0) {
+                        // Handle request and send response
+                        handle_master_request();
+                    } else {
+                        // No response towards master unhandled (warn/error)
+                        fprintf(stderr, "slave[%d]: No request towards slave unhandled!\n", getpid());
+                    }
                 }
             }
         }
@@ -261,7 +236,7 @@ static void *signal_handler_thread(void *ignore) {
 
 int destroy_allow_communication_cycle_semaphore() {
     if (sem_destroy(&self.allow_communication_cycle)) {
-        fprintf(stderr, "sem_destroy() call failed!\n");
+        fprintf(stderr, "slave[%d]: sem_destroy() call failed!\n", getpid());
         return RTC_ERROR;
     }
 
@@ -270,16 +245,7 @@ int destroy_allow_communication_cycle_semaphore() {
 
 int init_allow_communication_cycle_semaphore() {
     if (sem_init(&self.allow_communication_cycle, 0, 0)) {
-        fprintf(stderr, "sem_init() call failed!\n");
-        return RTC_ERROR;
-    }
-
-    return RTC_SUCCESS;
-}
-
-int init_master_processed_communication_cycle_semaphore() {
-    if (sem_init(&self.master_processed_communication_cycle, 0, 0)) {
-        fprintf(stderr, "sem_init() call failed!\n");
+        fprintf(stderr, "slave[%d]: sem_init() call failed!\n", getpid());
         return RTC_ERROR;
     }
 
@@ -292,7 +258,7 @@ int init_shared_memory() {
     // Get or create if not existing shared memory
     shmid = shmget(SHARED_MEMORY_KEY, sizeof(shm_t), 0666);
     if (shmid == -1) {
-        fprintf(stderr, "shmget() call failed to get shared memory id!\n");
+        fprintf(stderr, "slave[%d]: shmget() call failed to get shared memory id!\n", getpid());
         perror("shmget() failed!");
         return RTC_ERROR;
     }
@@ -300,7 +266,7 @@ int init_shared_memory() {
     // Attach to shared memory
     self.shmp = shmat(shmid, NULL, 0);
     if (self.shmp == (void*) -1) {
-        fprintf(stderr, "shmmat() call failed to attach to shared memory!\n");
+        fprintf(stderr, "slave[%d]: shmmat() call failed to attach to shared memory!\n", getpid());
         return RTC_ERROR;
     }
 
@@ -309,7 +275,7 @@ int init_shared_memory() {
 
 int init(int argc, char *argv[]) {
     if (argc != 3) {
-        fprintf(stderr, "Syntax: %s <slave_name> <available_parameters>\n", argv[0]);
+        fprintf(stderr, "slave[%d]: Syntax: %s <slave_name> <available_parameters>\n", getpid(), argv[0]);
         return RTC_ERROR;
     }
 
@@ -328,19 +294,9 @@ int init(int argc, char *argv[]) {
     if ((ret = block_signals()) != RTC_SUCCESS) return ret;
     if ((ret = init_shared_memory()) != RTC_SUCCESS) return ret;
     if ((ret = init_allow_communication_cycle_semaphore()) != RTC_SUCCESS) return ret;
-    if ((ret = init_master_processed_communication_cycle_semaphore()) != RTC_SUCCESS) return ret;
     if ((ret = create_communication_cycle_detached_thread()) != RTC_SUCCESS) return ret;
 
     srand(time(NULL));
-
-    return RTC_SUCCESS;
-}
-
-int destroy_master_processed_communication_cycle_semaphore() {
-    if (sem_destroy(&self.master_processed_communication_cycle)) {
-        fprintf(stderr, "sem_destroy() call failed!\n");
-        return RTC_ERROR;
-    }
 
     return RTC_SUCCESS;
 }
@@ -349,11 +305,10 @@ int final() {
     int ret = RTC_SUCCESS;
 
     ret = destroy_allow_communication_cycle_semaphore();
-    ret = destroy_master_processed_communication_cycle_semaphore();
 
     // Deattach from shared memory
     if (shmdt(self.shmp)) {
-        fprintf(stderr, "shmdt() call failed!\n");
+        fprintf(stderr, "slave[%d]: shmdt() call failed!\n", getpid());
         ret = RTC_ERROR;
     }
     self.shmp = NULL;
@@ -362,13 +317,30 @@ int final() {
 }
 
 
-long int wait_master_signal_master_parameter_response() {
+void send_master_ack_response() {
+    fprintf(stderr, "slave[%d]: send_master_ack_response()\n", getpid());
+    self.shmseg->res_s_to_m = ACK;
+    if (kill(self.shmp->master_pid, SIGUSR1)) {
+        fprintf(stderr, "slave[%d]: Failed to send response back to master!\n", getpid());
+    }
+}
+
+void send_master_nack_response() {
+    fprintf(stderr, "slave[%d]: send_master_nack_response()\n", getpid());
+    self.shmseg->res_s_to_m = NACK;
+    if (kill(self.shmp->master_pid, SIGUSR1)) {
+        fprintf(stderr, "slave[%d]: Failed to send response back to master!\n", getpid());
+    }
+}
+
+long int send_master_signal_master_parameter_request() {
     long int elapsed_communication_cycle_us = 0;
     long int time_segment_us = self.shmseg->communication_cycle_us
                                 / WAIT_MASTER_RESPONSE_TIMEOUT_SEGMENTS;
     int threshold = 0;
 
-    while (sem_trywait(&self.master_processed_communication_cycle)) {
+    // First time getting in here, for sure semaphore is 1
+    while (sem_trywait(&self.shmseg->sem_s_to_m_request)) {
         if (threshold >= WAIT_MASTER_RESPONSE_TIMEOUT_SEGMENTS) {
             set_error("Master failed to respond to request!");
             break;
@@ -381,64 +353,46 @@ long int wait_master_signal_master_parameter_response() {
         // Let signal be lost, continue as nothing happened.
     }
 
-    fprintf(stderr,
-        "[DEBUG %d] master_processed_communication_cycle, threshold = %d >= %d ?\n",
-        getpid(), threshold, WAIT_MASTER_RESPONSE_TIMEOUT_SEGMENTS);
+    fprintf(stderr, "slave[%d]: threshold >= %d\n", getpid(), threshold);
+    fprintf(stderr, "slave[%d]: Send data request to master\n", getpid());
+
+
+    int allow_communication_cycle_val = 1;
+    if (sem_getvalue(&self.allow_communication_cycle, &allow_communication_cycle_val)) {
+        fprintf(stderr, "slave[%d]: sem_getvalue() call failed!\n", getpid());
+        time_segment_us = 0;
+        return time_segment_us;
+    }
+    if (allow_communication_cycle_val <= 0) {
+        /* Communication cycle stopped => set time_segment_us to 0 and sem_s_to_m_request to 1
+         * because next time in here will be completely new.
+         */
+        time_segment_us = 0;
+        if (sem_post(&self.shmseg->sem_s_to_m_request)) {
+            fprintf(stderr, "slave[%d]: sem_post() call failed!\n", getpid());
+        }
+        return time_segment_us;
+    }
+
+
+    self.shmseg->req_s_to_m = SIGNAL_MASTER_PARAMETER;
+    if (kill(self.shmp->master_pid, SIGUSR1)) {
+        fprintf(stderr, "slave[%d]: Failed to send \"signal master parameter\" signal to master!\n", getpid());
+    }
 
     return time_segment_us;
 }
 
-
-void send_master_ack_response() {
-    self.shmseg->res_s_to_m = ACK;
-    if (kill(self.shmp->master_pid, SIGUSR1)) {
-        fprintf(stderr, "Failed to send response back to master!\n");
-    }
-}
-
-void send_master_nack_response() {
-    self.shmseg->res_s_to_m = NACK;
-    if (kill(self.shmp->master_pid, SIGUSR1)) {
-        fprintf(stderr, "Failed to send response back to master!\n");
-    }
-}
-
-void send_master_signal_master_parameter_request() {
-    fprintf(stderr, "[DEBUG %d] Sent data request to master\n", getpid());
-
-    self.shmseg->req_s_to_m = SIGNAL_MASTER_PARAMETER;
-    if (kill(self.shmp->master_pid, SIGUSR1)) {
-        fprintf(stderr, "Failed to send \"signal master parameter\" signal to master!\n");
-    }
-}
-
 void handle_signal_master_parameter_ack_response() {
-    // Master processed, allow slave to process and send again
-    if (sem_post(&self.master_processed_communication_cycle)) {
-        fprintf(stderr, "sem_post() call failed!\n");
-    }
-    fprintf(stderr, "[DEBUG %d] received ACK for processing new parameter cycle.\n", getpid());
-    self.shmseg->req_s_to_m = NO_REQUEST;
-    self.shmseg->res_m_to_s = NO_RESPONSE;
+    fprintf(stderr, "slave[%d]: received ACK for processing new parameter cycle.\n", getpid());
 }
 
 void handle_signal_master_parameter_nack_response() {
-    // Master processed, allow slave to process and try again
-    if (sem_post(&self.master_processed_communication_cycle)) {
-        fprintf(stderr, "sem_post() call failed!\n");
-    }
-    self.shmseg->req_s_to_m = NO_REQUEST;
-    self.shmseg->res_m_to_s = NO_RESPONSE;
+    fprintf(stderr, "slave[%d]: received NACK for processing new parameter cycle.\n", getpid());
 }
 
 void handle_signal_master_parameter_unrecognized_response() {
-    // Master processed, allow slave to process and try again
-    if (sem_post(&self.master_processed_communication_cycle)) {
-        fprintf(stderr, "sem_post() call failed!\n");
-    }
-    fprintf(stderr, "[DEBUG %d] Unrecognized response received from master\n", getpid());
-    self.shmseg->req_s_to_m = NO_REQUEST;
-    self.shmseg->res_m_to_s = NO_RESPONSE;
+    fprintf(stderr, "slave[%d]: Unrecognized response received from master\n", getpid());
 }
 
 
@@ -499,7 +453,7 @@ void handle_start_cycle_slave_request() {
     self.shmseg->cycle_started = true;
 
     if (sem_post(&self.allow_communication_cycle)) {
-        set_error("sem_post() failed on self.allow_communication_cycle!");
+        set_error("sem_post() failed on allow_communication_cycle!");
         send_master_nack_response();
         return;
     }
@@ -516,7 +470,9 @@ void handle_stop_cycle_slave_request() {
 
     self.shmseg->cycle_started = false;
 
+    fprintf(stderr, "slave[%d]: handle_stop_cycle_slave_request before getting semaphore allow_communication_cycle\n", getpid());
     sem_wait(&self.allow_communication_cycle);
+    fprintf(stderr, "slave[%d]: handle_stop_cycle_slave_request after getting semaphore allow_communication_cycle\n", getpid());
 
     send_master_ack_response();
 }
@@ -526,9 +482,58 @@ void handle_unrecognized_request() {
     send_master_nack_response();
 }
 
-void handle_unexpected_no_request() {
-    set_error("Unexpected no request received!");
-    send_master_nack_response();
+void handle_master_request() {
+    switch (self.shmseg->req_m_to_s) {
+    case CONNECT_SLAVE:
+        fprintf(stderr, "slave[%d]: handling CONNECT_SLAVE master request\n", getpid());
+        handle_connect_slave_request();
+        break;
+    case DISCONNECT_SLAVE:
+        fprintf(stderr, "slave[%d]: handling DISCONNECT_SLAVE master request\n", getpid());
+        handle_disconnect_slave_request();
+        break;
+    case CHANGE_SLAVE_NAME:
+        fprintf(stderr, "slave[%d]: handling CHANGE_SLAVE_NAME master request\n", getpid());
+        handle_change_name_slave_request();
+        break;
+    case START_SLAVE_CYCLE:
+        fprintf(stderr, "slave[%d]: handling START_SLAVE_CYCLE master request\n", getpid());
+        handle_start_cycle_slave_request();
+        break;
+    case STOP_SLAVE_CYCLE:
+        fprintf(stderr, "slave[%d]: handling STOP_SLAVE_CYCLE master request\n", getpid());
+        handle_stop_cycle_slave_request();
+        break;
+    default:
+        fprintf(stderr, "slave[%d]: handling default master request\n", getpid());
+        handle_unrecognized_request();
+        break;
+    }
+}
+
+
+void handle_master_response() {
+    switch (self.shmseg->req_s_to_m) {
+    case SIGNAL_MASTER_PARAMETER:
+        switch (self.shmseg->res_m_to_s) {
+        case ACK:
+            handle_signal_master_parameter_ack_response();
+            break;
+        case NACK:
+            handle_signal_master_parameter_nack_response();
+            break;
+        default:
+            handle_signal_master_parameter_unrecognized_response();
+            break;
+        }
+        break;
+    default:
+        fprintf(stderr, "slave[%d]: Unrecognized request received while handling master response\n", getpid());
+        break;
+    }
+    if (sem_post(&self.shmseg->sem_s_to_m_request)) {
+        fprintf(stderr, "slave[%d]: sem_post() call failed!\n", getpid());
+    }
 }
 
 

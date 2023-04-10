@@ -36,12 +36,15 @@ typedef struct master_context_s {
     pthread_mutex_t lock_async_handler_threads;
 } master_context_t;
 
-
+// Contains shared memory semaphores. First init shared memory.
 int init_signal_semaphores();
 int init_control_shared_memory();
 void init_slave_shmseg_shared_memory(shmseg_t *slave_shmseg);
 int init_shared_memory();
+
+// Entire process signal handler initialization
 int init_async_signal_handler();
+
 int init();
 
 int destroy_signal_semaphores();
@@ -53,17 +56,21 @@ void send_configurator_nack_response();
 void send_slave_ack_response(shmseg_t *slave_shmseg);
 void send_slave_nack_response(shmseg_t *slave_shmseg);
 
-int send_change_name_slave_request(int shmsegIdx);
+int send_change_name_slave_request(shmseg_t *slave_shmseg);
 int send_connect_slave_request(shmseg_t *slave_shmseg);
 int send_disconnect_slave_request(shmseg_t *slave_shmseg);
 int send_start_cycle_slave_request();
 int send_stop_cycle_slave_request();
 
 void handle_slave_request_errors(shmseg_t *slave_shmseg);
+
 int handle_configurator_stop_master_request();
 int handle_configurator_connect_slave_request();
 int handle_configurator_disconnect_slave_request();
-int handle_start_cycle_slave_request();
-int handle_stop_cycle_slave_request();
+int handle_configurator_start_cycle_slave_request();
+int handle_configurator_stop_cycle_slave_request();
+
+void handle_slave_request(shmseg_t *slave_shmseg);
+int handle_slave_response(int shmsegIdx);
 
 #endif /* MASTER_H */
