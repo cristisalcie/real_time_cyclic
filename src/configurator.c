@@ -381,10 +381,6 @@ void wait_disconnect_slave_response(pid_t slave_pid) {
     sigemptyset(&sig_set);
     sigaddset(&sig_set, SIGUSR2);
 
-    /* TODO: KNOWN BUG: this sigtimedwait() has 1 signal waiting in queue which will
-     * create have master respond with unknown request since configurator races faster
-     * to setting it to NO_REQUEST.
-     */
     err = sigtimedwait(&sig_set, &sig_info, &timeout);
     if (err == -1) {
         perror("sigtimedwait() call failed in wait_disconnect_slave_response()!");
@@ -1059,17 +1055,12 @@ int main(int argc, char *argv[]) {
                     self.control_shmp->request = START_SLAVE_CYCLE; // Since it's set to AUTOMATIC_TEST
                     if (send_start_cycle_slave_request(self.shmp->slave_shmseg[i].pid) == RTC_SUCCESS) {
                         wait_start_slave_cycle_response();
-                        usleep(650 * 1000); // If they start with same comm cycle at same time we miss signals :(
-                        // TODO -1: A way to check if master missed a signal from a slave.
-                        // Possible sollution: never miss a signal. Create more signal_handler_thread function threads
-                        // Nope
+                        usleep(650 * 1000); // If they start with same comm cycle at same time we miss signals
                     }
                 }
             }
             printf("\n PASSED START CYCLE STAGE!\n\n");
 
-            // TODO: Disconnect slaves
-            // TODO: Delete slaves
             break;
         }
         default:
