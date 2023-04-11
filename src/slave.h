@@ -6,10 +6,19 @@
 // Bigger value => increased busy waiting
 #define WAIT_MASTER_RESPONSE_TIMEOUT_SEGMENTS 20
 
+#define print_debug(str, args...)                                                                                    \
+    do {                                                                                                             \
+        fprintf(stdout, "slave[%d]: [DEBUG] " str "(%s, %s, %d)\n", getpid(), ##args, __FILE__, __func__, __LINE__); \
+    } while (0)
+#define print_error(str, args...)                                                                                    \
+    do {                                                                                                             \
+        fprintf(stderr, "slave[%d]: [ERROR] " str "(%s, %s, %d)\n", getpid(), ##args, __FILE__, __func__, __LINE__); \
+    } while (0)
+
 // Errors do stack!
 #define set_error(str, args...)                                                                 \
     do {                                                                                        \
-        fprintf(stderr, "slave[%d]: " str "\n", getpid(), ##args);                              \
+        print_error(str, ##args);                                                               \
         if (self.shmseg->shmseg_error_current_size < SHMSEG_ERROR_SIZE) {                       \
             snprintf(                                                                           \
                 self.shmseg->shmseg_error[self.shmseg->shmseg_error_current_size].error_string, \
@@ -17,10 +26,10 @@
                 str, ##args);                                                                   \
             ++self.shmseg->shmseg_error_current_size;                                           \
         } else {                                                                                \
-            fprintf(stderr, "slave[%d]: Couldn't set error because error buffer is full!\n",     \
-                getpid());                                                                      \
+            print_error("Couldn't set error because error buffer is full!");                    \
         }                                                                                       \
     } while(0)
+
 
 typedef struct slave_context_s {
     shm_t *shmp;
