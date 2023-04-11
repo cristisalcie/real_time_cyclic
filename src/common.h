@@ -24,7 +24,7 @@
 #define INT_VALUE_UNDEFINED -1
 #define BOOL_VALUE_UNDEFINED -1
 
-#define WAIT_TIMEOUT_SECONDS 5
+#define WAIT_TIMEOUT_SECONDS 10
 #define ERROR_NOT_SET_COMMUNICATION_CYCLE_MS -1
 
 #define SHMSEG_ERROR_SIZE 20
@@ -86,6 +86,10 @@ typedef struct shmseg_s {
     request_t req_m_to_s;
     response_t res_m_to_s;
     bool is_connected;
+    // Required because actual variables could have undefined values in order to have error checking
+    char last_known_string_value[STRING_SIZE];
+    int last_known_int_value;                  
+    bool last_known_bool_value;
 
 
     // Modifiable only by configurator

@@ -85,22 +85,39 @@ static int getAssignedShmsegIdx(pid_t pid) {
 static void print_slave_data_by_pid(pid_t pid) {
     int shmsegIdx = getAssignedShmsegIdx(pid);
     if (shmsegIdx == NO_IDX) return;
+    shmseg_t *slave_shmseg = &self.shmp->slave_shmseg[shmsegIdx];
 
+    printf("| ");
     printf("pid: %d | ", pid);
-    printf("name: %s | ", self.shmp->slave_shmseg[shmsegIdx].name);
-    printf("connected: %s | ", self.shmp->slave_shmseg[shmsegIdx].is_connected ? "true" : "false");
-    printf("cycle started: %s | ", self.shmp->slave_shmseg[shmsegIdx].cycle_started ? "true" : "false");
+    printf("name: %s | ", slave_shmseg->name);
+    printf("connected: %s | ", slave_shmseg->is_connected ? "true" : "false");
     printf("available parameters:");
-    if (self.shmp->slave_shmseg[shmsegIdx].available_parameters & STRING_PARAMETER_BIT) {
+    if (slave_shmseg->available_parameters & STRING_PARAMETER_BIT) {
         printf(" string");
     }
-    if (self.shmp->slave_shmseg[shmsegIdx].available_parameters & INT_PARAMETER_BIT) {
+    if (slave_shmseg->available_parameters & INT_PARAMETER_BIT) {
         printf(" int");
     }
-    if (self.shmp->slave_shmseg[shmsegIdx].available_parameters & BOOL_PARAMETER_BIT) {
+    if (slave_shmseg->available_parameters & BOOL_PARAMETER_BIT) {
         printf(" bool");
     }
-    printf("\n");
+    printf(" | ");
+    printf("cycle started: %s", slave_shmseg->cycle_started ? "true" : "false");
+
+    if (slave_shmseg->cycle_started) {
+        printf(" | ");
+        printf("requested parameters:");
+        if (slave_shmseg->requested_parameters & STRING_PARAMETER_BIT) {
+            printf(" string = %s", slave_shmseg->last_known_string_value);
+        }
+        if (slave_shmseg->requested_parameters & INT_PARAMETER_BIT) {
+            printf(" int = %d", slave_shmseg->last_known_int_value);
+        }
+        if (slave_shmseg->requested_parameters & BOOL_PARAMETER_BIT) {
+            printf(" bool = %d", slave_shmseg->last_known_bool_value);
+        }
+    }
+    printf(" |\n");
 }
 
 // Return -1 on error, log level on success.
