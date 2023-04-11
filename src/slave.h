@@ -8,7 +8,7 @@
 
 #define print_debug(str, args...)                                                                                    \
     do {                                                                                                             \
-        fprintf(stdout, "slave[%d]: [DEBUG] " str "(%s, %s, %d)\n", getpid(), ##args, __FILE__, __func__, __LINE__); \
+        fprintf(stderr, "slave[%d]: [DEBUG] " str "(%s, %s, %d)\n", getpid(), ##args, __FILE__, __func__, __LINE__); \
     } while (0)
 #define print_error(str, args...)                                                                                    \
     do {                                                                                                             \
