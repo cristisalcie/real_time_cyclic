@@ -529,6 +529,10 @@ int main(int argc, char *argv[]) {
         switch(self.control_shmp->request) {
         case START_MASTER:
         {
+            if (self.master_pid != NO_PID) {
+                printf("Master already started!\n");
+                break;
+            }
             int fork_pid = fork();
             if (fork_pid == 0) {
                 // Child process
